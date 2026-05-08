@@ -180,9 +180,6 @@
       "fast-xml-parser": ">=5.7.0",
       "next>postcss": ">=8.5.12",
       "gaxios>uuid": "14.0.0"
-    },
-    "onlyBuiltDependencies": [
-      "inngest-cli"
-    ]
+    }
   }
 }
