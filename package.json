@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"next dev --turbopack\" \"inngest-cli dev -p 8288\" \"email dev --dir ./src/emails --port 3001\"",
+    "dev": "concurrently \"next dev --turbopack\" \"./bin/inngest dev -p 8288\" \"email dev --dir ./src/emails --port 3001\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -131,7 +131,7 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.2.4",
-    "inngest-cli": "^1.18.0",
+    "inngest-cli": "^1.19.1",
     "openai": "^6.34.0",
     "postcss": "^8.5.10",
     "postcss-load-config": "^6.0.1",
@@ -179,6 +179,9 @@
       "fast-xml-parser": ">=5.7.0",
       "next>postcss": ">=8.5.12",
       "gaxios>uuid": "14.0.0"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "inngest-cli"
+    ]
   }
 }
