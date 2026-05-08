@@ -1,0 +1,8 @@
+allowBuilds:
+  '@sentry/cli': false
+  esbuild: false
+  inngest-cli: false
+  msw: false
+  protobufjs: false
+  sharp: false
+  unrs-resolver: false
