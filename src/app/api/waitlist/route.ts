@@ -49,8 +49,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.issues }, { status: 400 });
     }
 
+    console.error("Waitlist POST error:", error);
     return NextResponse.json(
-      { error: "Internal Server Error" },
+      { error: "Internal Server Error", detail: error instanceof Error ? error.message : String(error) },
       { status: 500 }
     );
   }
