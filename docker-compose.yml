@@ -1,0 +1,30 @@
+version: "3.9"
+
+# Muneem Ji dev services — database and object storage are hosted (Neon + AWS S3).
+# Only ClamAV and the Python pdfplumber sandbox run locally.
+
+services:
+  clamav:
+    image: clamav/clamav:stable
+    container_name: muneem-clamav
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav-db:/var/lib/clamav
+    environment:
+      - CLAMAV_NO_FRESHCLAMD=false
+    restart: unless-stopped
+
+  python-sandbox:
+    build:
+      context: ./docker/python-sandbox
+      dockerfile: Dockerfile
+    container_name: muneem-python-sandbox
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    # No network access for the sandbox — pdfplumber scripts must not reach external services
+    network_mode: none
+
+volumes:
+  clamav-db:
