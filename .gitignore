@@ -43,3 +43,8 @@ next-env.d.ts
 .source/
 .env
 .env.local
+
+# Knowledge base runtime state
+scripts/state.json
+scripts/last-flush.json
+reports/

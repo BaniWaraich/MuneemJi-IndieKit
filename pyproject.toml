@@ -1,0 +1,13 @@
+[project]
+name = "muneem-ji-kb"
+version = "0.1.0"
+description = "LLM personal knowledge base for Muneem Ji / Indie Kit sessions"
+requires-python = ">=3.12"
+dependencies = [
+    "claude-code-sdk>=0.0.14",
+    "python-dotenv>=1.0.0",
+    "tzdata>=2024.1",
+]
+
+[dependency-groups]
+dev = []
