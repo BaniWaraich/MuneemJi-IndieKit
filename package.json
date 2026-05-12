@@ -5,7 +5,7 @@
   "private": true,
   "packageManager": "pnpm@11.0.8",
   "scripts": {
-    "dev": "concurrently \"next dev --turbopack\" \"./bin/inngest dev -p 8288\" \"email dev --dir ./src/emails --port 3001\"",
+    "dev": "concurrently \"next dev\" \"./bin/inngest dev -p 8288\" \"email dev --dir ./src/emails --port 3001\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -13,6 +13,7 @@
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.1",
     "@auth/drizzle-adapter": "^1.11.2",
     "@aws-sdk/client-s3": "^3.1037.0",
     "@aws-sdk/client-ses": "^3.1037.0",
@@ -119,7 +120,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@react-email/preview-server": "^5.2.10",
+    "@react-email/preview-server": "^5.2.11",
     "@tailwindcss/postcss": "^4.2.2",
     "@tailwindcss/typography": "^0.5.19",
     "@types/js-cookie": "^3.0.6",

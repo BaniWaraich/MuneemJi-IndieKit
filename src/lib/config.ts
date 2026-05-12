@@ -15,7 +15,7 @@ export const appConfig: AppConfigPublic = {
   description:
     "Muneem Ji is a NextJS starter kit for building your own SaaS in hours.",
   auth: {
-    enablePasswordAuth: false, // Set to true to enable password-based authentication
+    enablePasswordAuth: true,
   },
   legal: {
     address: {

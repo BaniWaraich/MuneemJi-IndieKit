@@ -275,7 +275,7 @@ export default function MuneemJiPage() {
             <a href="#for-cas" className="ulink">For CAs</a>
             <a href="#for-owners" className="ulink">For Business Owners</a>
             <a href="#find-ca" className="ulink">Find a CA</a>
-            <a href="#" className="ulink text-muted">Sign in</a>
+            <a href="/login" className="ulink text-muted">Sign in</a>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
@@ -525,7 +525,7 @@ export default function MuneemJiPage() {
               </p>
               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <a
-                  href="#"
+                  href="/register"
                   className="btn-primary"
                   style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 3, fontSize: 14, fontWeight: 500, textDecoration: "none" }}
                 >
