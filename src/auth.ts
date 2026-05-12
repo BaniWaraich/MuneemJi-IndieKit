@@ -92,7 +92,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   },
   callbacks: {
     async signIn() {
-      return process.env.NEXT_PUBLIC_SIGNIN_ENABLED === "true";
+      return process.env.NEXT_PUBLIC_SIGNIN_ENABLED !== "false";
     },
     async session({ session, token }) {
       if (token.sub) {
