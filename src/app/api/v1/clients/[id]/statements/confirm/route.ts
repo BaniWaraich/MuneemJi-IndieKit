@@ -1,27 +1,16 @@
-import { NextResponse } from "next/server";
-import { z } from "zod";
-import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
-import { bankStatements } from "@/db/schema/muneem";
-import {
-  requireFirmOrOwnerForClient,
-  UnauthorizedError,
-  ForbiddenError,
-} from "@/lib/auth/tenant";
-import { inngest } from "@/lib/inngest/client";
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { and, eq } from 'drizzle-orm';
+import { db } from '@/db';
+import { bankStatements } from '@/db/schema/muneem';
+import { requireFirmOrOwnerForClient, UnauthorizedError, ForbiddenError } from '@/lib/auth/tenant';
+import { inngest } from '@/lib/inngest/client';
 
 const schema = z.object({ statementId: z.string().uuid() });
 
-// Auto-clean when explicitly opted in: SKIP_VIRUS_SCAN (dev only, blocked in
-// prod by the upload route) or SCAN_PROVIDER=noop (prod-allowed stub until F03).
-const AUTO_CLEAN =
-  process.env.SKIP_VIRUS_SCAN === "true" ||
-  process.env.SCAN_PROVIDER === "noop";
+const SKIP_VIRUS_SCAN = process.env.SKIP_VIRUS_SCAN === 'true';
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     await requireFirmOrOwnerForClient(id);
@@ -30,7 +19,7 @@ export async function POST(
     const result = schema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
-        { error: "Invalid input", details: result.error.flatten() },
+        { error: 'Invalid input', details: result.error.flatten() },
         { status: 400 },
       );
     }
@@ -46,18 +35,18 @@ export async function POST(
     });
 
     if (!statement) {
-      return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
+      return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
     }
 
-    if (statement.status !== "processing") {
-      return NextResponse.json({ error: "ALREADY_PROCESSED" }, { status: 409 });
+    if (statement.status !== 'processing') {
+      return NextResponse.json({ error: 'ALREADY_PROCESSED' }, { status: 409 });
     }
 
     // In dev (SKIP_VIRUS_SCAN=true), the file was marked clean at insert time.
     // Fire the Inngest event immediately so the pipeline runs without ClamAV.
-    if (AUTO_CLEAN && statement.scanStatus === "clean") {
+    if (SKIP_VIRUS_SCAN && statement.scanStatus === 'clean') {
       await inngest.send({
-        name: "muneem/statement.uploaded",
+        name: 'muneem/statement.uploaded',
         data: { statementId },
       });
       return NextResponse.json({ queued: true });
@@ -68,10 +57,10 @@ export async function POST(
     return NextResponse.json({ queued: false });
   } catch (e) {
     if (e instanceof UnauthorizedError) {
-      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
     }
     if (e instanceof ForbiddenError) {
-      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
     }
     throw e;
   }

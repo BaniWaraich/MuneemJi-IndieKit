@@ -1,15 +1,11 @@
-import { NextResponse } from "next/server";
-import { z } from "zod";
-import crypto from "crypto";
-import { count, desc, eq, sum } from "drizzle-orm";
-import { db } from "@/db";
-import { bankStatements, clientOrgs } from "@/db/schema/muneem";
-import {
-  requireFirmOrOwnerForClient,
-  UnauthorizedError,
-  ForbiddenError,
-} from "@/lib/auth/tenant";
-import { presignPut } from "@/lib/muneem-storage/presign";
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import crypto from 'crypto';
+import { count, desc, eq, sum } from 'drizzle-orm';
+import { db } from '@/db';
+import { bankStatements, clientOrgs } from '@/db/schema/muneem';
+import { requireFirmOrOwnerForClient, UnauthorizedError, ForbiddenError } from '@/lib/auth/tenant';
+import { presignPut } from '@/lib/muneem-storage/presign';
 
 const MAX_STATEMENTS_PER_CLIENT = 50;
 const MAX_STORAGE_BYTES_PER_FIRM = 500 * 1024 * 1024; // 500 MB
@@ -17,32 +13,17 @@ const MAX_STORAGE_BYTES_PER_FIRM = 500 * 1024 * 1024; // 500 MB
 const schema = z.object({
   filename: z.string().min(1).max(255),
   contentType: z.string().min(1).max(127),
-  fileSizeBytes: z
-    .number()
-    .int()
-    .positive()
-    .max(25 * 1024 * 1024), // 25 MB hard limit
+  fileSizeBytes: z.number().int().positive().max(25 * 1024 * 1024), // 25 MB hard limit
 });
 
 // SKIP_VIRUS_SCAN skips ClamAV and marks uploads clean on ingest. Safe in dev,
 // catastrophic in prod — hard-fail if someone sets it there.
-if (
-  process.env.NODE_ENV === "production" &&
-  process.env.SKIP_VIRUS_SCAN === "true"
-) {
-  throw new Error("SKIP_VIRUS_SCAN=true is forbidden in production");
+if (process.env.NODE_ENV === 'production' && process.env.SKIP_VIRUS_SCAN === 'true') {
+  throw new Error('SKIP_VIRUS_SCAN=true is forbidden in production');
 }
-// SCAN_PROVIDER=noop is an explicit, prod-allowed stub used until F03 (real
-// ClamAV) ships. It auto-marks scanStatus='clean' so the pipeline can run.
-// Replace by setting SCAN_PROVIDER=clamav (or unset) once F03 is live.
-const AUTO_CLEAN =
-  process.env.SKIP_VIRUS_SCAN === "true" ||
-  process.env.SCAN_PROVIDER === "noop";
+const SKIP_VIRUS_SCAN = process.env.SKIP_VIRUS_SCAN === 'true';
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const access = await requireFirmOrOwnerForClient(id);
@@ -51,7 +32,7 @@ export async function POST(
     const result = schema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
-        { error: "Invalid input", details: result.error.flatten() },
+        { error: 'Invalid input', details: result.error.flatten() },
         { status: 400 },
       );
     }
@@ -62,7 +43,7 @@ export async function POST(
       columns: { firmId: true },
     });
     if (!clientOrg) {
-      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
     }
 
     // Check per-client statement count cap.
@@ -72,10 +53,7 @@ export async function POST(
       .where(eq(bankStatements.clientOrgId, id));
     if ((countRow?.n ?? 0) >= MAX_STATEMENTS_PER_CLIENT) {
       return NextResponse.json(
-        {
-          error: "STORAGE_LIMIT_EXCEEDED",
-          detail: "Client has reached the 50-statement limit.",
-        },
+        { error: 'STORAGE_LIMIT_EXCEEDED', detail: 'Client has reached the 50-statement limit.' },
         { status: 402 },
       );
     }
@@ -100,57 +78,44 @@ export async function POST(
         }
       }
     }
-    if (
-      firmStorageBytes + BigInt(result.data.fileSizeBytes) >
-      BigInt(MAX_STORAGE_BYTES_PER_FIRM)
-    ) {
+    if (firmStorageBytes + BigInt(result.data.fileSizeBytes) > BigInt(MAX_STORAGE_BYTES_PER_FIRM)) {
       return NextResponse.json(
-        {
-          error: "STORAGE_LIMIT_EXCEEDED",
-          detail: "Firm has reached the 500 MB storage limit.",
-        },
+        { error: 'STORAGE_LIMIT_EXCEEDED', detail: 'Firm has reached the 500 MB storage limit.' },
         { status: 402 },
       );
     }
 
-    const s3Key = `statements/${id}/${Date.now()}-${crypto.randomBytes(8).toString("hex")}-${result.data.filename}`;
+    const s3Key = `statements/${id}/${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${result.data.filename}`;
     const uploadUrl = await presignPut(s3Key, result.data.contentType, 900);
 
     const [row] = await db
       .insert(bankStatements)
       .values({
         clientOrgId: id,
-        uploadedByUser: access.kind === "firm" ? access.session.userId : null,
-        uploadedByClient:
-          access.kind === "owner" ? access.session.ownerId : null,
+        uploadedByUser: access.kind === 'firm' ? access.session.userId : null,
+        uploadedByClient: access.kind === 'owner' ? access.session.ownerId : null,
         s3Key,
         filename: result.data.filename,
         fileSizeBytes: BigInt(result.data.fileSizeBytes),
-        currency: "INR",
-        status: "processing",
-        scanStatus: AUTO_CLEAN ? "clean" : "pending",
+        currency: 'INR',
+        status: 'processing',
+        scanStatus: SKIP_VIRUS_SCAN ? 'clean' : 'pending',
       })
       .returning({ id: bankStatements.id });
 
-    return NextResponse.json(
-      { statementId: row.id, uploadUrl, s3Key },
-      { status: 200 },
-    );
+    return NextResponse.json({ statementId: row.id, uploadUrl, s3Key }, { status: 200 });
   } catch (e) {
     if (e instanceof UnauthorizedError) {
-      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
     }
     if (e instanceof ForbiddenError) {
-      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
     }
     throw e;
   }
 }
 
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     await requireFirmOrOwnerForClient(id);
@@ -172,10 +137,10 @@ export async function GET(
     return NextResponse.json({ statements: rows });
   } catch (e) {
     if (e instanceof UnauthorizedError) {
-      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
     }
     if (e instanceof ForbiddenError) {
-      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+      return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
     }
     throw e;
   }
