@@ -79,7 +79,8 @@ Rules:
   transfers to unidentified parties as "possible related-party transfer — verify"
   rather than a definite vendor payment.`;
 
-const openai = new OpenAI();
+let _openai: OpenAI | undefined;
+const getOpenAI = () => (_openai ??= new OpenAI());
 
 export class LlmCallError extends Error {
   constructor(message: string) {
@@ -160,7 +161,7 @@ async function callLlm(
 ): Promise<LlmClassification[]> {
   let res;
   try {
-    res = await openai.chat.completions.create(
+    res = await getOpenAI().chat.completions.create(
       {
         model: MODEL,
         temperature: 0,

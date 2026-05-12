@@ -46,9 +46,8 @@ Also extract from the statement header:
 
 Return the complete Python script only. No explanation. No markdown fences.`;
 
-// Singleton SDK client — avoids re-creating HTTP agents per call and picks
-// ANTHROPIC_API_KEY from env once at module load.
-const anthropic = new Anthropic();
+let _anthropic: Anthropic | undefined;
+const getAnthropic = () => (_anthropic ??= new Anthropic());
 
 export async function lookupScript(
   firmId: string,
@@ -68,7 +67,7 @@ export async function generateScript(
   rawHeaderText: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await anthropic.messages.create(
+  const res = await getAnthropic().messages.create(
     {
       model: SCRIPT_GENERATION_MODEL,
       max_tokens: 16384,

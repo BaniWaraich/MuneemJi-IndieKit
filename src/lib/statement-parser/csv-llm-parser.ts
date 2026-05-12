@@ -62,7 +62,8 @@ const csvLlmResultSchema = z.object({
 export type CsvLlmTransaction = z.infer<typeof csvLlmRowSchema>;
 export type CsvLlmResult = z.infer<typeof csvLlmResultSchema>;
 
-const openai = new OpenAI();
+let _openai: OpenAI | undefined;
+const getOpenAI = () => (_openai ??= new OpenAI());
 
 /**
  * Parse a bank statement CSV by sending the raw text to GPT-4o mini in a
@@ -101,7 +102,7 @@ export async function parseCsvWithLlm(
 }
 
 async function callGpt4oMini(csvText: string, signal?: AbortSignal): Promise<CsvLlmResult> {
-  const res = await openai.chat.completions.create(
+  const res = await getOpenAI().chat.completions.create(
     {
       model: MODEL,
       temperature: 0,
