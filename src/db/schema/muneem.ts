@@ -137,6 +137,7 @@ export const bankStatements = pgTable(
     ),
     s3Key: text("s3_key").notNull(),
     filename: text("filename").notNull(),
+    fileSizeBytes: bigint("file_size_bytes", { mode: "bigint" }),
     periodStart: date("period_start"),
     periodEnd: date("period_end"),
     currency: char("currency", { length: 3 }).notNull(),

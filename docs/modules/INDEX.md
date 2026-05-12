@@ -48,7 +48,7 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 
 | ID | Module | Status | One-liner |
 |---|---|---|---|
-| D01 | bank-statement-upload | PLANNED | BO uploads statement → metadata row → enqueue → status surface; the user-facing on-ramp for D02. |
+| [D01](./D01-bank-statement-upload.md) | bank-statement-upload | SPECCED | BO uploads statement → metadata row → enqueue → status surface; the user-facing on-ramp for D02. |
 | [D02](./D02-statement-format-extraction.md) | statement-format-extraction | IMPLEMENTED | Any statement (PDF or CSV) → normalised Markdown KV. PDF: bank-id + per-firm pdfplumber script cache + Claude Opus on miss + sandbox exec + balance validation. CSV: GPT-4o mini straight-through. **No business logic.** |
 | [D03](./D03-statement-interpretation.md) | statement-interpretation | IMPLEMENTED | Markdown KV + client knowledge (O03) → structured `bank_transactions` rows with `needs_invoice` / category / reasoning. Rule pre-filter (known vendors / customers / loans / inter-account / owner drawings) handles deterministic cases; GPT-4o mini handles residue with client context. **All business logic lives here.** |
 | D04 | invoice-submission | PLANNED | BO uploads invoice (free or against a flagged transaction); pre-sign → scan → store. |

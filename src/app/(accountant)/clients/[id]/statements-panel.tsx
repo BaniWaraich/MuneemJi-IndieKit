@@ -90,6 +90,7 @@ export function StatementsPanel({
         body: JSON.stringify({
           filename: file.name,
           contentType: file.type || 'application/octet-stream',
+          fileSizeBytes: file.size,
         }),
       });
       if (!createRes.ok) throw new Error('Failed to start upload');

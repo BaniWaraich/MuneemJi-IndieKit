@@ -15,6 +15,13 @@
       "when": 1778318902466,
       "tag": "0001_hesitant_stardust",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1747094400000,
+      "tag": "0002_d01_file_size_bytes",
+      "breakpoints": true
     }
   ]
 }
