@@ -55,7 +55,7 @@ function log(
   level: "info" | "warn" | "error",
   msg: string,
   ctx: LogCtx,
-  extra?: object
+  extra?: object,
 ) {
   const line = JSON.stringify({
     level,
@@ -75,7 +75,7 @@ function isPdfBuffer(buf: Buffer): boolean {
 
 function balanceErrorMessage(
   balance: ReturnType<typeof validateBalance>,
-  running: ReturnType<typeof validateRunningBalances>
+  running: ReturnType<typeof validateRunningBalances>,
 ): string {
   if (!balance.pass)
     return `endpoint mismatch, computed=${balance.computedClosing}`;
@@ -108,7 +108,7 @@ type ParseLogParams = {
 
 async function safeWriteParseLog(
   params: ParseLogParams,
-  ctx: LogCtx
+  ctx: LogCtx,
 ): Promise<void> {
   try {
     await db.insert(statementParseLog).values(params);
@@ -131,7 +131,7 @@ async function writePhase1Markdown(
     extractionMethod: ExtractionMethod;
     extractionConfidence: number;
   },
-  sendEvent: (event: { name: string; data: object }) => Promise<void>
+  sendEvent: (event: { name: string; data: object }) => Promise<void>,
 ): Promise<void> {
   const { markdown, periodStart, periodEnd } = renderMarkdownKv({
     bank: input.bank,
@@ -184,7 +184,15 @@ export const statementExtract = inngest.createFunction(
     retries: 3,
     triggers: [{ event: "muneem/statement.uploaded" }],
   },
-  async ({ event, step, logger }: { event: { id: string; data: { statementId: string } }; step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }; logger: { info: (msg: string, ctx?: object) => void } }) => {
+  async ({
+    event,
+    step,
+    logger,
+  }: {
+    event: { id: string; data: { statementId: string } };
+    step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> };
+    logger: { info: (msg: string, ctx?: object) => void };
+  }) => {
     const { statementId } = event.data as { statementId: string };
 
     await step.run("extract-statement", async () => {
@@ -205,7 +213,7 @@ export const statementExtract = inngest.createFunction(
       // CLAUDE.md rule #4: scan before process
       if (statement.scanStatus !== "clean") {
         throw new Error(
-          `refusing to process statement with scan_status='${statement.scanStatus}' (must be 'clean')`
+          `refusing to process statement with scan_status='${statement.scanStatus}' (must be 'clean')`,
         );
       }
 
@@ -227,17 +235,31 @@ export const statementExtract = inngest.createFunction(
         await inngest.send(e);
       };
 
-      if (isPdfBuffer(fileBuffer)) {
-        await handlePdf(statement, firmId, fileBuffer, ctx, sendEvent);
-      } else if (statement.filename.toLowerCase().endsWith(".csv")) {
-        await handleCsv(statement, firmId, fileBuffer, ctx, sendEvent);
-      } else {
-        throw new Error(
-          "file does not start with %PDF- magic bytes and is not .csv"
-        );
+      try {
+        if (isPdfBuffer(fileBuffer)) {
+          await handlePdf(statement, firmId, fileBuffer, ctx, sendEvent);
+        } else if (statement.filename.toLowerCase().endsWith(".csv")) {
+          await handleCsv(statement, firmId, fileBuffer, ctx, sendEvent);
+        } else {
+          throw new Error(
+            "file does not start with %PDF- magic bytes and is not .csv",
+          );
+        }
+      } catch (err) {
+        const message = (
+          err instanceof Error ? err.message : String(err)
+        ).slice(0, 500);
+        await db
+          .update(bankStatements)
+          .set({ status: "failed", errorMessage: message })
+          .where(eq(bankStatements.id, statement.id));
+        log("error", "statement-extract: marked failed", ctx, {
+          error: message,
+        });
+        throw err;
       }
     });
-  }
+  },
 );
 
 async function handleCsv(
@@ -245,16 +267,20 @@ async function handleCsv(
   firmId: string,
   fileBuffer: Buffer,
   ctx: LogCtx,
-  sendEvent: (e: { name: string; data: object }) => Promise<void>
+  sendEvent: (e: { name: string; data: object }) => Promise<void>,
 ): Promise<void> {
   const csvText = fileBuffer.toString("utf-8");
   const result = await parseCsvWithLlm(csvText);
 
-  const currency = (result.currency || statement.currency || "INR").toUpperCase();
+  const currency = (
+    result.currency ||
+    statement.currency ||
+    "INR"
+  ).toUpperCase();
   assertSupportedCurrency(currency);
   if (statement.currency && currency !== statement.currency.toUpperCase()) {
     throw new Error(
-      `extracted currency ${currency} does not match declared ${statement.currency}`
+      `extracted currency ${currency} does not match declared ${statement.currency}`,
     );
   }
 
@@ -263,7 +289,9 @@ async function handleCsv(
     closingBalance: result.closing_balance,
     rows: result.transactions,
   });
-  const runningBalances = validateRunningBalances({ rows: result.transactions });
+  const runningBalances = validateRunningBalances({
+    rows: result.transactions,
+  });
   const balancePass = balanceResult.pass && runningBalances.pass;
 
   await safeWriteParseLog(
@@ -281,12 +309,12 @@ async function handleCsv(
         ? null
         : balanceErrorMessage(balanceResult, runningBalances),
     },
-    ctx
+    ctx,
   );
 
   if (!balancePass) {
     throw new Error(
-      `Balance validation failed for CSV statement ${statement.id}: ${balanceErrorMessage(balanceResult, runningBalances)}`
+      `Balance validation failed for CSV statement ${statement.id}: ${balanceErrorMessage(balanceResult, runningBalances)}`,
     );
   }
 
@@ -307,7 +335,7 @@ async function handleCsv(
       extractionMethod: "csv_llm" as ExtractionMethod,
       extractionConfidence,
     },
-    sendEvent
+    sendEvent,
   );
 }
 
@@ -316,7 +344,7 @@ async function handlePdf(
   firmId: string,
   pdfBuffer: Buffer,
   ctx: LogCtx,
-  sendEvent: (e: { name: string; data: object }) => Promise<void>
+  sendEvent: (e: { name: string; data: object }) => Promise<void>,
 ): Promise<void> {
   const bankId = await identifyBank(pdfBuffer);
 
@@ -355,9 +383,10 @@ async function handlePdf(
         openingBalance: null,
         closingBalance: null,
         computedClosing: null,
-        errorMessage: `Script execution failed: ${(err as Error).message}`.slice(0, 500),
+        errorMessage:
+          `Script execution failed: ${(err as Error).message}`.slice(0, 500),
       },
-      ctx
+      ctx,
     );
     throw err;
   }
@@ -367,7 +396,9 @@ async function handlePdf(
     closingBalance: extraction.closing_balance,
     rows: extraction.transactions,
   });
-  const runningBalances = validateRunningBalances({ rows: extraction.transactions });
+  const runningBalances = validateRunningBalances({
+    rows: extraction.transactions,
+  });
   const balancePass = balanceResult.pass && runningBalances.pass;
 
   if (!balancePass && isFromCache) {
@@ -391,9 +422,13 @@ async function handlePdf(
           openingBalance: null,
           closingBalance: null,
           computedClosing: null,
-          errorMessage: `Retry script execution failed: ${(retryErr as Error).message}`.slice(0, 500),
+          errorMessage:
+            `Retry script execution failed: ${(retryErr as Error).message}`.slice(
+              0,
+              500,
+            ),
         },
-        ctx
+        ctx,
       );
       throw retryErr;
     }
@@ -403,7 +438,9 @@ async function handlePdf(
       closingBalance: retryExtraction.closing_balance,
       rows: retryExtraction.transactions,
     });
-    const retryRunning = validateRunningBalances({ rows: retryExtraction.transactions });
+    const retryRunning = validateRunningBalances({
+      rows: retryExtraction.transactions,
+    });
     const retryPass = retryBalance.pass && retryRunning.pass;
 
     await safeWriteParseLog(
@@ -414,19 +451,23 @@ async function handlePdf(
         parseMethod: "pdfplumber_new",
         balanceCheckPass: retryPass,
         transactionsFound: retryExtraction.transactions.length,
-        openingBalance: BigInt(Math.round(retryExtraction.opening_balance * 100)),
-        closingBalance: BigInt(Math.round(retryExtraction.closing_balance * 100)),
+        openingBalance: BigInt(
+          Math.round(retryExtraction.opening_balance * 100),
+        ),
+        closingBalance: BigInt(
+          Math.round(retryExtraction.closing_balance * 100),
+        ),
         computedClosing: retryBalance.computedClosing,
         errorMessage: retryPass
           ? null
           : balanceErrorMessage(retryBalance, retryRunning),
       },
-      ctx
+      ctx,
     );
 
     if (!retryPass) {
       throw new Error(
-        `Balance validation failed on retry for statement ${statement.id}: ${balanceErrorMessage(retryBalance, retryRunning)}. No further retries.`
+        `Balance validation failed on retry for statement ${statement.id}: ${balanceErrorMessage(retryBalance, retryRunning)}. No further retries.`,
       );
     }
 
@@ -450,14 +491,18 @@ async function handlePdf(
       ctx,
       {
         bank: bankId,
-        currency: (retryExtraction.currency || statement.currency || "INR").toUpperCase(),
+        currency: (
+          retryExtraction.currency ||
+          statement.currency ||
+          "INR"
+        ).toUpperCase(),
         openingBalance: retryExtraction.opening_balance,
         closingBalance: retryExtraction.closing_balance,
         transactions: retryExtraction.transactions,
         extractionMethod: "pdfplumber_new",
         extractionConfidence,
       },
-      sendEvent
+      sendEvent,
     );
     return;
   }
@@ -477,12 +522,12 @@ async function handlePdf(
         ? null
         : balanceErrorMessage(balanceResult, runningBalances),
     },
-    ctx
+    ctx,
   );
 
   if (!balancePass) {
     throw new Error(
-      `Balance validation failed for statement ${statement.id}: ${balanceErrorMessage(balanceResult, runningBalances)}`
+      `Balance validation failed for statement ${statement.id}: ${balanceErrorMessage(balanceResult, runningBalances)}`,
     );
   }
 
@@ -503,11 +548,15 @@ async function handlePdf(
     bankIdentified: bankId !== null,
   });
 
-  const currency = (extraction.currency || statement.currency || "INR").toUpperCase();
+  const currency = (
+    extraction.currency ||
+    statement.currency ||
+    "INR"
+  ).toUpperCase();
   assertSupportedCurrency(currency);
   if (statement.currency && currency !== statement.currency.toUpperCase()) {
     throw new Error(
-      `extracted currency ${currency} does not match declared ${statement.currency}`
+      `extracted currency ${currency} does not match declared ${statement.currency}`,
     );
   }
 
@@ -523,6 +572,6 @@ async function handlePdf(
       extractionMethod: isFromCache ? "pdfplumber_cached" : "pdfplumber_new",
       extractionConfidence,
     },
-    sendEvent
+    sendEvent,
   );
 }
