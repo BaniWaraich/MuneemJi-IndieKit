@@ -25,6 +25,9 @@ declare module "next-auth" {
       id: string;
       email: string;
       impersonatedBy?: string;
+      // Muneem Ji: CA staff and BO users carry role + firmId
+      role?: "ca_admin" | "ca_staff" | "business_owner";
+      firmId?: string;
     };
     expires: string;
   }
@@ -68,7 +71,7 @@ const adapter = DrizzleAdapter(db, {
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   pages: {
-    signIn: "/sign-in",
+    signIn: "/login",
     signOut: "/sign-out",
   },
   session: {
@@ -101,6 +104,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (token.impersonatedBy) {
         session.user.impersonatedBy = token.impersonatedBy as string;
       }
+      // Muneem Ji: expose role + firmId on session for CA staff
+      if (token.role) {
+        session.user.role = token.role as "ca_admin" | "ca_staff" | "business_owner";
+      }
+      if (token.firmId) {
+        session.user.firmId = token.firmId as string;
+      }
       return session;
     },
     async jwt({ token, user }) {
@@ -109,13 +119,25 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.impersonatedBy = user.impersonatedBy;
       }
 
-      // NOTE: Do not add anything else to the token, except for the sub
-      // This avoids stale data problems, while increasing db roundtrips
-      // which is acceptable while starting small.
+      // Muneem Ji: load role + firmId from app_user on first sign-in
+      if (user?.id) {
+        const dbUser = await db
+          .select({ role: users.role, firmId: users.firmId })
+          .from(users)
+          .where(eq(users.id, user.id))
+          .limit(1)
+          .then((rows) => rows[0]);
+        if (dbUser?.role) token.role = dbUser.role;
+        if (dbUser?.firmId) token.firmId = dbUser.firmId;
+      }
+
+      // NOTE: Keep the token minimal to avoid stale data problems.
       return {
         sub: token.sub,
         email: token.email,
         impersonatedBy: token.impersonatedBy,
+        role: token.role,
+        firmId: token.firmId,
         iat: token.iat,
         exp: token.exp,
         jti: token.jti,
@@ -229,6 +251,47 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           };
         } catch (error) {
           console.error("Error during impersonation:", error);
+          return null;
+        }
+      },
+    }),
+    // Muneem Ji: Business Owner (BO) login via client_users table
+    CredentialsProvider({
+      id: "client-credentials",
+      name: "Client Credentials",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        if (!credentials?.email || !credentials?.password) return null;
+        try {
+          const { clientUsers } = await import("./db/schema/muneem");
+          const { verifyPassword } = await import("./lib/auth/password");
+          const row = await db
+            .select({
+              id: clientUsers.id,
+              email: clientUsers.email,
+              name: clientUsers.name,
+              passwordHash: clientUsers.passwordHash,
+              clientOrgId: clientUsers.clientOrgId,
+            })
+            .from(clientUsers)
+            .where(eq(clientUsers.email, credentials.email as string))
+            .limit(1)
+            .then((rows) => rows[0]);
+          if (!row) return null;
+          const ok = await verifyPassword(credentials.password as string, row.passwordHash);
+          if (!ok) return null;
+          return {
+            id: row.id,
+            email: row.email,
+            name: row.name,
+            role: "business_owner" as const,
+            firmId: row.clientOrgId, // BO's firm context = their clientOrgId
+          };
+        } catch (err) {
+          console.error("Error during BO authentication:", err);
           return null;
         }
       },

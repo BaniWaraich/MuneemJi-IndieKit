@@ -6,6 +6,7 @@ import {
   primaryKey,
   integer,
   jsonb,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 import type { AdapterAccountType } from "next-auth/adapters";
@@ -42,6 +43,14 @@ export const users = pgTable("app_user", {
   polarSubscriptionId: text("polarSubscriptionId"),
 
   planId: text("planId").references(() => plans.id),
+
+  // Muneem Ji: CA staff have role set + firmId pointing to their accountant_firms row.
+  // Business owners (BO) who signed up independently have role='business_owner', firmId=null.
+  // Regular SaaS users have role=null, firmId=null.
+  role: text("role", {
+    enum: ["ca_admin", "ca_staff", "business_owner"],
+  }),
+  firmId: uuid("firmId"), // FK enforced at application layer to avoid circular import with muneem.ts
 });
 
 export const accounts = pgTable(

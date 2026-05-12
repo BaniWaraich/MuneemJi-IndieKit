@@ -99,6 +99,8 @@ const withAuthRequired = (handler: WithManagerHandler) => {
           polarSubscriptionId: users.polarSubscriptionId,
           emailVerified: users.emailVerified,
           credits: users.credits,
+          role: users.role,
+          firmId: users.firmId,
         })
         .from(users)
         .where(eq(users.id, userId))
