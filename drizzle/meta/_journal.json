@@ -22,6 +22,13 @@
       "when": 1747094400000,
       "tag": "0002_d01_file_size_bytes",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778686195947,
+      "tag": "0003_f03_scan_lifecycle",
+      "breakpoints": true
     }
   ]
 }

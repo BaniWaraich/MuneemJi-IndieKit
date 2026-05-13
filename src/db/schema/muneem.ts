@@ -80,7 +80,7 @@ export const clientContacts = pgTable(
   },
   (table) => [
     unique("client_contacts_org_email").on(table.clientOrgId, table.email),
-  ]
+  ],
 );
 
 export const clientUsers = pgTable("client_users", {
@@ -133,7 +133,7 @@ export const bankStatements = pgTable(
     // Either a CA staff member or a BO client uploaded — exactly one must be set.
     uploadedByUser: text("uploaded_by_user").references(() => users.id), // CA staff (app_user)
     uploadedByClient: uuid("uploaded_by_client").references(
-      () => clientUsers.id
+      () => clientUsers.id,
     ),
     s3Key: text("s3_key").notNull(),
     filename: text("filename").notNull(),
@@ -142,10 +142,12 @@ export const bankStatements = pgTable(
     periodEnd: date("period_end"),
     currency: char("currency", { length: 3 }).notNull(),
     scanStatus: text("scan_status", {
-      enum: ["pending", "clean", "infected", "error"],
+      enum: ["pending", "scanning", "clean", "infected", "error"],
     })
       .notNull()
       .default("pending"),
+    scanAttempts: integer("scan_attempts").notNull().default(0),
+    quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
     status: text("status", {
       enum: ["processing", "phase1_complete", "parsed", "empty", "failed"],
     })
@@ -160,10 +162,30 @@ export const bankStatements = pgTable(
   (table) => [
     check(
       "uploaded_by_one_party",
-      sql`(${table.uploadedByUser} IS NOT NULL AND ${table.uploadedByClient} IS NULL) OR (${table.uploadedByUser} IS NULL AND ${table.uploadedByClient} IS NOT NULL)`
+      sql`(${table.uploadedByUser} IS NOT NULL AND ${table.uploadedByClient} IS NULL) OR (${table.uploadedByUser} IS NULL AND ${table.uploadedByClient} IS NOT NULL)`,
     ),
-  ]
+    check(
+      "scan_status_enum",
+      sql`${table.scanStatus} IN ('pending', 'scanning', 'clean', 'infected', 'error')`,
+    ),
+  ],
 );
+
+// F03: append-only scan attempt log. One row per callback received (including
+// duplicates / idempotency 409s). Powers forensic review and retry counting.
+export const scanLog = pgTable("scan_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  s3Key: text("s3_key").notNull(),
+  attempt: integer("attempt").notNull(),
+  result: text("result", {
+    enum: ["clean", "infected", "error", "ignored"],
+  }).notNull(),
+  reason: text("reason"),
+  providerRef: text("provider_ref"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
 
 export const bankTransactions = pgTable(
   "bank_transactions",
@@ -225,9 +247,9 @@ export const bankTransactions = pgTable(
   (table) => [
     uniqueIndex("bank_transactions_statement_dedupe_key").on(
       table.statementId,
-      table.dedupeKey
+      table.dedupeKey,
     ),
-  ]
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -262,7 +284,7 @@ export const bankParserScripts = pgTable(
     uniqueIndex("bank_parser_scripts_firm_bank_active_key")
       .on(table.firmId, table.bankIdentifier)
       .where(sql`is_active = true`),
-  ]
+  ],
 );
 
 export const statementParseLog = pgTable("statement_parse_log", {
@@ -274,7 +296,7 @@ export const statementParseLog = pgTable("statement_parse_log", {
     .notNull()
     .references(() => bankStatements.id),
   parserScriptId: uuid("parser_script_id").references(
-    () => bankParserScripts.id
+    () => bankParserScripts.id,
   ),
   parseMethod: text("parse_method", {
     enum: ["pdfplumber_cached", "pdfplumber_new", "csv_direct"],
@@ -307,7 +329,7 @@ export const documents = pgTable("documents", {
     .notNull()
     .references(() => clientOrgs.id),
   submittedByClient: uuid("submitted_by_client").references(
-    () => clientUsers.id
+    () => clientUsers.id,
   ),
   submittedByGuest: uuid("submitted_by_guest").references(() => guestTokens.id),
   s3Key: text("s3_key").notNull(),
@@ -371,7 +393,7 @@ export const transactionDocumentMatches = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
-  }
+  },
 );
 
 // ---------------------------------------------------------------------------
@@ -427,7 +449,7 @@ export const chartOfAccounts = pgTable(
   },
   (table) => [
     unique("chart_of_accounts_org_code").on(table.clientOrgId, table.code),
-  ]
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -554,7 +576,9 @@ export const clientKnowledge = pgTable("client_knowledge", {
     .notNull()
     .default(sql`'[]'::jsonb`),
   seasonality: jsonb("seasonality").$type<Seasonality>(),
-  ownerDrawingsPattern: jsonb("owner_drawings_pattern").$type<OwnerDrawingsPattern>(),
+  ownerDrawingsPattern: jsonb(
+    "owner_drawings_pattern",
+  ).$type<OwnerDrawingsPattern>(),
   cashDepositPattern: jsonb("cash_deposit_pattern").$type<CashDepositPattern>(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -590,5 +614,5 @@ export const transactionCategoryCorrections = pgTable(
       .notNull()
       .default(false),
     promotedAt: timestamp("promoted_at", { withTimezone: true }),
-  }
+  },
 );

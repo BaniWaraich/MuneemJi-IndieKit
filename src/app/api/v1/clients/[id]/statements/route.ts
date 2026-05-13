@@ -37,8 +37,6 @@ if (
     "SKIP_VIRUS_SCAN=true is forbidden on the production deployment",
   );
 }
-const SKIP_VIRUS_SCAN = process.env.SKIP_VIRUS_SCAN === "true";
-
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -128,7 +126,9 @@ export async function POST(
         fileSizeBytes: BigInt(result.data.fileSizeBytes),
         currency: "INR",
         status: "processing",
-        scanStatus: SKIP_VIRUS_SCAN ? "clean" : "pending",
+        // Always 'pending' at insert; F03 scan-orchestrator owns the
+        // transition (it short-circuits to 'clean' in SKIP_VIRUS_SCAN mode).
+        scanStatus: "pending",
       })
       .returning({ id: bankStatements.id });
 

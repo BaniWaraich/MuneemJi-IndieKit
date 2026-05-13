@@ -2,7 +2,7 @@
  * D02: Statement Format Extraction — Inngest function.
  * Replaces workers/statement.worker.ts from the original BullMQ architecture.
  *
- * Event: "muneem/statement.uploaded"
+ * Event: "muneem/statement.cleared" (F03 emits after scan_status='clean')
  * Payload: { statementId: string }
  *
  * On completion, sends "muneem/statement.extracted" to trigger D03.
@@ -182,7 +182,7 @@ export const statementExtract = inngest.createFunction(
     name: "Muneem: D02 Statement Format Extraction",
     concurrency: { limit: 2 },
     retries: 3,
-    triggers: [{ event: "muneem/statement.uploaded" }],
+    triggers: [{ event: "muneem/statement.cleared" }],
   },
   async ({
     event,

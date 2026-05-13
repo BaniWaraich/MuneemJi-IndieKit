@@ -54,7 +54,7 @@ function log(
   level: "info" | "warn" | "error",
   msg: string,
   ctx: LogCtx,
-  extra?: object
+  extra?: object,
 ) {
   const line = JSON.stringify({
     level,
@@ -80,7 +80,7 @@ function amountMinorOf(tx: Phase1Transaction): bigint {
 function rowFromRule(
   tx: Phase1Transaction,
   rule: RuleMatch,
-  extractionConfidence: number
+  extractionConfidence: number,
 ): InterpretedRow {
   return {
     transaction_index: tx.transaction_index,
@@ -101,7 +101,7 @@ function rowFromRule(
 function rowFromLlm(
   tx: Phase1Transaction,
   llm: LlmClassification,
-  extractionConfidence: number
+  extractionConfidence: number,
 ): InterpretedRow {
   const method: InterpretationMethod = "llm";
   return {
@@ -114,7 +114,7 @@ function rowFromLlm(
     reasoning: llm.reasoning,
     interpretation_method: method,
     interpretation_confidence: confidenceToString(
-      llm.confidence * extractionConfidence
+      llm.confidence * extractionConfidence,
     ),
     matched_known_vendor_name: null,
     matched_active_loan_lender: null,
@@ -124,7 +124,7 @@ function rowFromLlm(
 
 function rowFromFallback(
   tx: Phase1Transaction,
-  extractionConfidence: number
+  extractionConfidence: number,
 ): InterpretedRow {
   const method: InterpretationMethod = "llm_fallback";
   const category: Category = "unknown";
@@ -165,7 +165,7 @@ function buildInterpretedRows(input: {
     const llm = input.llmClassifications.get(tx.transaction_index);
     if (!llm) {
       throw new Error(
-        `LLM classification missing for transaction_index ${tx.transaction_index}`
+        `LLM classification missing for transaction_index ${tx.transaction_index}`,
       );
     }
     out.push(rowFromLlm(tx, llm, input.extractionConfidence));
@@ -181,131 +181,156 @@ export const statementInterpret = inngest.createFunction(
     retries: 3,
     triggers: [{ event: "muneem/statement.extracted" }],
   },
-  async ({ event, step, logger }: { event: { id: string; data: { statementId: string } }; step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }; logger: { info: (msg: string, ctx?: object) => void } }) => {
+  async ({
+    event,
+    step,
+    logger,
+  }: {
+    event: { id: string; data: { statementId: string } };
+    step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> };
+    logger: { info: (msg: string, ctx?: object) => void };
+  }) => {
     const { statementId } = event.data as { statementId: string };
 
     await step.run("interpret-statement", async () => {
-      const statement = await db.query.bankStatements.findFirst({
-        where: eq(bankStatements.id, statementId),
-      });
-      if (!statement) throw new Error(`Statement ${statementId} not found`);
+      try {
+        const statement = await db.query.bankStatements.findFirst({
+          where: eq(bankStatements.id, statementId),
+        });
+        if (!statement) throw new Error(`Statement ${statementId} not found`);
 
-      // Idempotency / phase gate
-      if (statement.status !== "phase1_complete") {
-        logger.info(
-          "statement-interpret: skipping non-phase1_complete statement",
-          { statementId, status: statement.status }
-        );
-        return;
-      }
-
-      if (!statement.phase1Markdown) {
-        throw new InvalidPhase1MarkdownError(
-          "phase1_markdown is null on phase1_complete row"
-        );
-      }
-
-      const org = await db.query.clientOrgs.findFirst({
-        where: eq(clientOrgs.id, statement.clientOrgId),
-        columns: { firmId: true },
-      });
-      if (!org)
-        throw new Error(`clientOrg ${statement.clientOrgId} not found`);
-
-      const ctx: LogCtx = {
-        runId: event.id,
-        statementId,
-        clientOrgId: statement.clientOrgId,
-        firmId: org.firmId,
-      };
-      log("info", "statement-interpret: start", ctx);
-
-      const profile = await db.query.clientProfiles.findFirst({
-        where: eq(clientProfiles.clientOrgId, statement.clientOrgId),
-      });
-      if (!profile) {
-        throw new Error(
-          `client_profiles row missing for client_org ${statement.clientOrgId}`
-        );
-      }
-
-      const knowledge =
-        (await db.query.clientKnowledge.findFirst({
-          where: eq(clientKnowledge.clientOrgId, statement.clientOrgId),
-        })) ?? null;
-
-      const doc = parsePhase1Markdown(statement.phase1Markdown);
-      const ownAccountLast4 =
-        profile.bankAccounts.find((a) => a.is_primary_operating)
-          ?.account_number_last4 ?? null;
-
-      const ruleResult = runRulePrefilter(doc.transactions, {
-        ownAccountLast4,
-        bankAccounts: profile.bankAccounts,
-        knownVendors: knowledge?.knownVendors ?? [],
-        knownCustomers: knowledge?.knownCustomers ?? [],
-        activeLoans: knowledge?.activeLoans ?? [],
-        ownerDrawingsPattern: knowledge?.ownerDrawingsPattern ?? null,
-      });
-
-      let llmClassifications = new Map<number, LlmClassification>();
-      let normalisationMode: "llm" | "fallback" | "skipped" = "skipped";
-      if (ruleResult.unmatched.length > 0) {
-        const contextBlock = buildClientContextBlock(profile, knowledge);
-        const classifyResult = await classifyResidueWithLlm(
-          ruleResult.unmatched,
-          contextBlock
-        );
-        if (classifyResult.mode === "llm") {
-          llmClassifications = classifyResult.classifications;
-          normalisationMode = "llm";
-        } else {
-          normalisationMode = "fallback";
+        // Idempotency / phase gate
+        if (statement.status !== "phase1_complete") {
+          logger.info(
+            "statement-interpret: skipping non-phase1_complete statement",
+            { statementId, status: statement.status },
+          );
+          return;
         }
-      }
 
-      const extractionConfidence = doc.frontmatter.extraction_confidence;
-      const rows = buildInterpretedRows({
-        doc,
-        ruleMatches: ruleResult.matches,
-        llmClassifications,
-        fallback: normalisationMode === "fallback",
-        extractionConfidence,
-      });
+        if (!statement.phase1Markdown) {
+          throw new InvalidPhase1MarkdownError(
+            "phase1_markdown is null on phase1_complete row",
+          );
+        }
 
-      assertIntegrity({ doc, rowsToInsert: rows });
+        const org = await db.query.clientOrgs.findFirst({
+          where: eq(clientOrgs.id, statement.clientOrgId),
+          columns: { firmId: true },
+        });
+        if (!org)
+          throw new Error(`clientOrg ${statement.clientOrgId} not found`);
 
-      const parseMethod = await readD02ParseMethod(statementId);
-      const normalisedSumMinor = computeNormalisedSumMinor(rows);
-
-      await insertInterpretedRows({
-        statementId,
-        clientOrgId: statement.clientOrgId,
-        firmId: org.firmId,
-        currency: doc.frontmatter.currency,
-        rows,
-        normalisationMode,
-        normalisedRowCount: rows.length,
-        normalisedSumMinor,
-        parseMethod,
-      });
-
-      // Emit event for future D06 match worker (PLANNED)
-      await inngest.send({
-        name: "muneem/interpretation.complete",
-        data: {
-          clientOrgId: statement.clientOrgId,
+        const ctx: LogCtx = {
+          runId: event.id,
           statementId,
-          trigger: "d03_complete",
-        },
-      });
+          clientOrgId: statement.clientOrgId,
+          firmId: org.firmId,
+        };
+        log("info", "statement-interpret: start", ctx);
 
-      log("info", "statement-interpret: complete", ctx, {
-        rows: rows.length,
-        rule_hits: ruleResult.matches.size,
-        llm_residue: ruleResult.unmatched.length,
-        normalisation_mode: normalisationMode,
-      });
+        const profile = await db.query.clientProfiles.findFirst({
+          where: eq(clientProfiles.clientOrgId, statement.clientOrgId),
+        });
+        if (!profile) {
+          throw new Error(
+            `client_profiles row missing for client_org ${statement.clientOrgId}`,
+          );
+        }
+
+        const knowledge =
+          (await db.query.clientKnowledge.findFirst({
+            where: eq(clientKnowledge.clientOrgId, statement.clientOrgId),
+          })) ?? null;
+
+        const doc = parsePhase1Markdown(statement.phase1Markdown);
+        const ownAccountLast4 =
+          profile.bankAccounts.find((a) => a.is_primary_operating)
+            ?.account_number_last4 ?? null;
+
+        const ruleResult = runRulePrefilter(doc.transactions, {
+          ownAccountLast4,
+          bankAccounts: profile.bankAccounts,
+          knownVendors: knowledge?.knownVendors ?? [],
+          knownCustomers: knowledge?.knownCustomers ?? [],
+          activeLoans: knowledge?.activeLoans ?? [],
+          ownerDrawingsPattern: knowledge?.ownerDrawingsPattern ?? null,
+        });
+
+        let llmClassifications = new Map<number, LlmClassification>();
+        let normalisationMode: "llm" | "fallback" | "skipped" = "skipped";
+        if (ruleResult.unmatched.length > 0) {
+          const contextBlock = buildClientContextBlock(profile, knowledge);
+          const classifyResult = await classifyResidueWithLlm(
+            ruleResult.unmatched,
+            contextBlock,
+          );
+          if (classifyResult.mode === "llm") {
+            llmClassifications = classifyResult.classifications;
+            normalisationMode = "llm";
+          } else {
+            normalisationMode = "fallback";
+          }
+        }
+
+        const extractionConfidence = doc.frontmatter.extraction_confidence;
+        const rows = buildInterpretedRows({
+          doc,
+          ruleMatches: ruleResult.matches,
+          llmClassifications,
+          fallback: normalisationMode === "fallback",
+          extractionConfidence,
+        });
+
+        assertIntegrity({ doc, rowsToInsert: rows });
+
+        const parseMethod = await readD02ParseMethod(statementId);
+        const normalisedSumMinor = computeNormalisedSumMinor(rows);
+
+        await insertInterpretedRows({
+          statementId,
+          clientOrgId: statement.clientOrgId,
+          firmId: org.firmId,
+          currency: doc.frontmatter.currency,
+          rows,
+          normalisationMode,
+          normalisedRowCount: rows.length,
+          normalisedSumMinor,
+          parseMethod,
+        });
+
+        // Emit event for future D06 match worker (PLANNED)
+        await inngest.send({
+          name: "muneem/interpretation.complete",
+          data: {
+            clientOrgId: statement.clientOrgId,
+            statementId,
+            trigger: "d03_complete",
+          },
+        });
+
+        log("info", "statement-interpret: complete", ctx, {
+          rows: rows.length,
+          rule_hits: ruleResult.matches.size,
+          llm_residue: ruleResult.unmatched.length,
+          normalisation_mode: normalisationMode,
+        });
+      } catch (err) {
+        const message = (
+          err instanceof Error ? err.message : String(err)
+        ).slice(0, 500);
+        await db
+          .update(bankStatements)
+          .set({ status: "failed", errorMessage: message })
+          .where(eq(bankStatements.id, statementId));
+        log(
+          "error",
+          "statement-interpret: marked failed",
+          { runId: event.id, statementId },
+          { error: message },
+        );
+        throw err;
+      }
     });
-  }
+  },
 );
