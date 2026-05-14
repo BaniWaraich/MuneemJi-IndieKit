@@ -34,7 +34,7 @@ export const scanOrchestrator = inngest.createFunction(
   {
     id: "muneem-scan-orchestrator",
     name: "Muneem: F03 Scan Orchestrator",
-    concurrency: { limit: 10 },
+    concurrency: { limit: 5 },
     retries: 3,
     triggers: [{ event: "muneem/statement.received" }],
   },
