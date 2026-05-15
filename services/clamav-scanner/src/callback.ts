@@ -15,7 +15,10 @@ export async function postCallback(args: {
     scanProviderRef: args.result.providerRef,
   });
 
-  const timestamp = Math.floor(Date.now() / 1000).toString();
+  // Vercel verifyScanCallback (src/lib/storage/scan-hmac.ts) parses the
+  // timestamp with Date.parse and rejects anything outside ±5 min skew.
+  // Must be ISO 8601 / RFC3339 UTC — unix seconds parse to NaN and 401.
+  const timestamp = new Date().toISOString();
   const signature = createHmac("sha256", env.SCAN_CALLBACK_SECRET)
     .update(`${timestamp}.${body}`)
     .digest("hex");
