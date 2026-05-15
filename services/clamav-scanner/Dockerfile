@@ -7,11 +7,13 @@ RUN apk add --no-cache nodejs npm supervisor tini ca-certificates
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+# Install all deps (incl. tsc + @types) so the build step works,
+# then prune devDependencies for a smaller runtime image.
+RUN npm install
 
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
 
 COPY supervisord.conf /etc/supervisord.conf
 
