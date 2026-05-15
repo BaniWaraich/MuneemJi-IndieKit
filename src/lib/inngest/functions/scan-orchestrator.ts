@@ -9,9 +9,9 @@
  *   - Append a row to scan_log.
  *   - In dev with SKIP_VIRUS_SCAN=true: short-circuit to 'clean' and emit
  *     "muneem/statement.cleared" so the pipeline runs without ClamAV.
- *   - In prod: end the function after marking 'scanning'; the rest of the
- *     state machine is driven by the HMAC-signed callback from the AV
- *     Lambda (see /api/v1/internal/scan-callback).
+ *   - In prod: POST { s3Key, scanId, callbackUrl } to the Railway scanner at
+ *     $SCANNER_URL/scan with Authorization: Bearer $SCANNER_INBOUND_SECRET.
+ *     The verdict arrives asynchronously at /api/v1/internal/scan-callback.
  *
  * Module-load assertion: SKIP_VIRUS_SCAN=true must NEVER reach production.
  * Mirrors the guard at the presign route; F03 spec §7 centralises it here.
@@ -133,10 +133,41 @@ export const scanOrchestrator = inngest.createFunction(
       return;
     }
 
-    // Prod: nothing more to do here. The Lambda will POST to
-    // /api/v1/internal/scan-callback when it has a verdict, and that route
-    // drives the next transition.
-    logger.info("scan-orchestrator: awaiting AV callback", {
+    // Prod: dispatch to the Railway scanner. The verdict arrives later at
+    // /api/v1/internal/scan-callback, which drives the next transition.
+    const scannerUrl = process.env.SCANNER_URL;
+    const scannerInboundSecret = process.env.SCANNER_INBOUND_SECRET;
+    const scanCallbackUrl = process.env.SCAN_CALLBACK_URL;
+    if (!scannerUrl || !scannerInboundSecret || !scanCallbackUrl) {
+      throw new Error(
+        "SCANNER_URL, SCANNER_INBOUND_SECRET, SCAN_CALLBACK_URL must be set (F03 Railway scanner)",
+      );
+    }
+
+    await step.run("dispatch-to-railway-scanner", async () => {
+      const res = await fetch(`${scannerUrl.replace(/\/$/, "")}/scan`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${scannerInboundSecret}`,
+        },
+        body: JSON.stringify({
+          s3Key: transition.s3Key,
+          scanId: `${statementId}:${transition.attempt}`,
+          attempt: transition.attempt,
+          callbackUrl: scanCallbackUrl,
+        }),
+      });
+      if (!res.ok) {
+        // Surface a retriable error so Inngest's function-level retries kick in.
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `Railway scanner dispatch failed: ${res.status} ${body.slice(0, 200)}`,
+        );
+      }
+    });
+
+    logger.info("scan-orchestrator: dispatched to Railway scanner", {
       statementId,
       attempt: transition.attempt,
     });

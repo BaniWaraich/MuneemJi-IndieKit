@@ -1,20 +1,20 @@
 ---
 id: F03
 name: file-upload-virus-scan
-status: DRAFT
+status: SPECCED
 owners: ["api", "db-handler", "inngest-handler"]
-last_updated: 2026-05-13
+last_updated: 2026-05-14
 ---
 
 # F03 — File Upload & Virus Scan
 
-> F03 is the universal "trust gate" for every byte that enters Muneem Ji. It issues pre-signed S3 PUT URLs, drives the `scan_status` lifecycle for every uploadable row (`bank_statements` today; `invoices` and BO docs later), and brokers asynchronous AV scanning through an AWS Lambda + ClamAV pipeline triggered by S3 `ObjectCreated`. The Lambda HMAC-signs a callback into Vercel which flips `scan_status` and fires the downstream "cleared" Inngest event. Nothing downstream — parsing, OCR, journal writes — may touch a file whose `scan_status != 'clean'`.
+> F03 is the universal "trust gate" for every byte that enters Muneem Ji. It issues pre-signed S3 PUT URLs, drives the `scan_status` lifecycle for every uploadable row (`bank_statements` today; `invoices` and BO docs later), and brokers asynchronous AV scanning through a Railway-hosted ClamAV service. The Vercel-side Inngest orchestrator POSTs a scan request to the Railway scanner; the scanner streams the S3 object into clamd, then HMAC-signs a callback back into Vercel which flips `scan_status` and fires the downstream "cleared" Inngest event. Nothing downstream — parsing, OCR, journal writes — may touch a file whose `scan_status != 'clean'`.
 
 ---
 
 ## Status
 
-`DRAFT`. The Inngest migration is already complete in code (`src/lib/inngest/functions/statement-extract.ts`, `statement-interpret.ts`); the D02 and D03 spec docs describing BullMQ are stale and should be refreshed independently of F03.
+`SPECCED`. AV pipeline target is a Railway-hosted custom container (clamd + Node HTTP wrapper, single image, persistent volume for the signature DB). The earlier AWS Lambda + S3 `ObjectCreated` trigger design is dropped — Vercel cannot run clamd, and Railway gives us a long-lived container with a persistent volume at lower operational complexity. The Inngest migration is already complete in code (`src/lib/inngest/functions/statement-extract.ts`, `statement-interpret.ts`); the D02 and D03 spec docs describing BullMQ are stale and should be refreshed independently of F03.
 
 ---
 
@@ -30,8 +30,7 @@ Make file safety a single, enforced, module-owned concern instead of a per-route
 
 - Presign request from a calling module (library call, not HTTP): `{ firmId, clientOrgId, kind: 'statement' | 'invoice' | 'bo_doc', filename, contentType, fileSizeBytes }`. The caller is responsible for storage-cap and per-file-size checks **before** invoking F03.
 - Inngest event `muneem/statement.received` (emitted by D01 after S3 PUT confirmation + row insert). F03 subscribes and initiates the scan flow. Analogous events from D04/D05 (`muneem/invoice.received`, …) land later.
-- S3 `ObjectCreated:Put` events on the upload bucket (consumed by the F03 Lambda — outside Vercel).
-- HMAC-signed scan-result callbacks from the Lambda: `{ s3Key, status: 'clean' | 'infected' | 'error', reason?: string, scanProviderRef: string }`.
+- HMAC-signed scan-result callbacks from the Railway scanner: `{ s3Key, status: 'clean' | 'infected' | 'error', reason?: string, scanProviderRef: string }`. There is no S3-side trigger — the orchestrator drives the scanner over HTTP.
 
 **Outputs**
 
@@ -49,9 +48,9 @@ This module does NOT: parse statement content, classify, OCR, write journal entr
 
 - **Library calls from other modules:**
   - `presignUpload(args)` — used by D01's `POST /statements`, D04's invoice presign, BO doc upload routes. Caller has already validated caps.
-- **Inngest event subscription:** `muneem/statement.received` (and future `muneem/invoice.received`, …) — emitted by the calling module after S3 PUT confirmation + row insert. F03's Inngest function transitions `scan_status` from `pending` → `scanning` and waits for the Lambda callback.
-- **AWS-side trigger:** S3 `ObjectCreated:Put` on `uploads/*` invokes the ClamAV Lambda. (Configured in infra, not in app code.)
-- **HTTP route owned by F03:** `POST /api/v1/internal/scan-callback` — invoked only by the Lambda; HMAC-signed; verified before any DB write (see §5 and §7).
+- **Inngest event subscription:** `muneem/statement.received` (and future `muneem/invoice.received`, …) — emitted by the calling module after S3 PUT confirmation + row insert. F03's Inngest function transitions `scan_status` from `pending` → `scanning`, then POSTs `{ s3Key, scanId, callbackUrl }` to the Railway scanner (`SCANNER_URL + /scan`) with `Authorization: Bearer ${SCANNER_INBOUND_SECRET}`. Returning a 2xx ack from the scanner does NOT mean clean — the verdict arrives asynchronously over the callback.
+- **Railway-side scanner (out-of-repo deployable, lives at `services/clamav-scanner/`):** A single Docker image bundling `clamd` + a Node HTTP wrapper, supervised by `supervisord`, with a Railway persistent volume mounted at `/var/lib/clamav` for signature-DB persistence across restarts. The wrapper exposes `POST /scan`, `GET /healthz`, `GET /readyz`. It streams the S3 object into clamd via INSTREAM (no disk landing), then signs and POSTs the verdict to `SCAN_CALLBACK_URL` using `SCAN_CALLBACK_SECRET`.
+- **HTTP route owned by F03:** `POST /api/v1/internal/scan-callback` — invoked only by the Railway scanner; HMAC-signed; verified before any DB write (see §5 and §7).
 
 ---
 
@@ -107,7 +106,7 @@ No new top-level entity tables in V1 beyond `scan_log`.
     s3Key: string;
     status: 'clean' | 'infected' | 'error';
     reason?: string;
-    scanProviderRef: string;   // ClamAV daemon scan id / Lambda invocation id
+    scanProviderRef: string;   // clamd scan id / Railway request id
   }
   ```
 - **Response 200:** `{ ok: true }`
@@ -130,7 +129,7 @@ This module exposes no public-user-facing HTTP routes beyond the internal callba
 
 **Subscribes**
 
-- `muneem/statement.received` — `{ statementId }` — emitted by D01 after S3 PUT confirm + row insert. F03 transitions `scan_status` from `pending` → `scanning`, records `scan_attempts = 1`, and awaits the Lambda callback. (Future: `muneem/invoice.received`, etc.)
+- `muneem/statement.received` — `{ statementId }` — emitted by D01 after S3 PUT confirm + row insert. F03 transitions `scan_status` from `pending` → `scanning`, records `scan_attempts = 1`, POSTs the scan request to the Railway scanner, and awaits the asynchronous callback. (Future: `muneem/invoice.received`, etc.)
 - `muneem/scan.retry` — internal retry loop. Concurrency 5; max 3 attempts (initial + 2 retries); exponential backoff `30s, 5m`. Idempotency key: `scan-retry:{s3Key}:{attempt}`. Each retry increments `scan_attempts`.
 
 **Publishes**
@@ -168,15 +167,15 @@ None.
 
 ## 9. Economics
 
-| Component                    | Per unit                        | Frequency         | Notes                       |
-| ---------------------------- | ------------------------------- | ----------------- | --------------------------- |
-| S3 PUT request               | ~$0.000005                      | per upload        | negligible                  |
-| S3 storage (Standard, ≤1y)   | $0.023/GB/month                 | per file          | capped 500 MB/firm at D01   |
-| S3 storage (Glacier IR, >1y) | $0.004/GB/month                 | per file          | post-archival transition    |
-| Lambda invocation (ClamAV)   | ~$0.0000002 + ~$0.00001667/GB-s | per upload        | ~2s @ 1 GB → ~$0.00003/scan |
-| Quarantine retention         | $0.023/GB-month × ≤90 days      | per infected file | bounded                     |
+| Component                    | Per unit                       | Frequency         | Notes                                          |
+| ---------------------------- | ------------------------------ | ----------------- | ---------------------------------------------- |
+| S3 PUT request               | ~$0.000005                     | per upload        | negligible                                     |
+| S3 storage (Standard, ≤1y)   | $0.023/GB/month                | per file          | capped 500 MB/firm at D01                      |
+| S3 storage (Glacier IR, >1y) | $0.004/GB/month                | per file          | post-archival transition                       |
+| Railway scanner service      | flat ~$5–10/month (1 instance) | constant          | clamd + freshclam + Node wrapper; volume ~2 GB |
+| Quarantine retention         | $0.023/GB-month × ≤90 days     | per infected file | bounded                                        |
 
-**Watch metric:** scan-attempt-failure rate > 2% over 24h indicates Lambda or ClamAV signature problems.
+**Watch metric:** scan-attempt-failure rate > 2% over 24h indicates Railway scanner or ClamAV signature problems. Also watch Railway scanner `/readyz` — `false` for > 10 minutes pages oncall.
 
 ---
 
@@ -184,12 +183,12 @@ None.
 
 | Failure                | Trigger                                     | Impact                                                                          | Severity | Recovery                                                                                       |
 | ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `HMAC_INVALID`         | Bad signature on callback                   | Callback rejected pre-DB; row stuck `scanning`                                  | high     | Investigate secret mismatch; manually re-trigger Lambda.                                       |
-| `SCAN_TIMEOUT`         | Lambda > 60s or no callback in 10m          | Retry up to 3× then `scan_status='error'`, emit `scan.failed`, no quarantine    | medium   | Uploader notified; can re-upload.                                                              |
+| `HMAC_INVALID`         | Bad signature on callback                   | Callback rejected pre-DB; row stuck `scanning`                                  | high     | Investigate secret mismatch; manually re-fire scan via Railway logs.                           |
+| `SCAN_TIMEOUT`         | Railway scan > 60s or no callback in 10m    | Retry up to 3× then `scan_status='error'`, emit `scan.failed`, no quarantine    | medium   | Uploader notified; can re-upload.                                                              |
 | `S3_QUARANTINE_FAILED` | Copy or delete fails during quarantine flow | Infected object may linger in `uploads/`                                        | high     | Alert; manual cleanup; lifecycle rule on `uploads/` deletes orphans after 30 days as backstop. |
 | `INNGEST_EMIT_FAILED`  | Inngest outage at clean callback            | Row marked `clean` but downstream stalled                                       | high     | Inngest retries; manual re-fire via dashboard; F08 alerts.                                     |
 | `CALLBACK_RACE`        | Two callbacks for same `s3Key`              | Idempotency guard: terminal state wins, `409` returned, both rows in `scan_log` | low      | None needed.                                                                                   |
-| Lambda outage          | AWS region issue                            | New uploads sit at `scanning` indefinitely                                      | critical | Disable presign at the gate; show banner; F08 page oncall.                                     |
+| Scanner outage         | Railway service down or `/readyz=false`     | New uploads sit at `scanning` indefinitely                                      | critical | Disable presign at the gate; show banner; F08 page oncall. Restart Railway service.            |
 
 Note: `STORAGE_LIMIT_EXCEEDED` moved to D01 (no longer F03's failure mode).
 
@@ -199,7 +198,18 @@ Note: `STORAGE_LIMIT_EXCEEDED` moved to D01 (no longer F03's failure mode).
 
 - **Depends on (modules):** F02 (tenant isolation for ownership checks on callback row lookup).
 - **Depended on by (modules):** D01 (emits `muneem/statement.received`, consumes `presignUpload`), D04, D05, X02, and every future module that ingests files.
-- **External services:** AWS S3 (upload bucket + quarantine bucket/prefix), AWS Lambda (ClamAV layer), AWS S3 lifecycle policies, Inngest.
+- **External services:** AWS S3 (upload bucket + quarantine bucket/prefix), AWS S3 lifecycle policies, Inngest, **Railway** (hosts the `muneem-clamav-scanner` service — custom container with clamd + Node HTTP wrapper + persistent volume at `/var/lib/clamav`).
+
+### Environment variables (Railway design)
+
+| Var                                                        | Where            | Purpose                                                                             |
+| ---------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------- |
+| `SCANNER_URL`                                              | Vercel           | Base URL of the Railway scanner (no trailing slash).                                |
+| `SCANNER_INBOUND_SECRET`                                   | Vercel + Railway | Bearer token Vercel sends on `POST /scan`; Railway rejects unauthenticated callers. |
+| `SCAN_CALLBACK_SECRET`                                     | Vercel + Railway | HMAC SHA-256 secret over the callback body (header `X-Muneem-Scan-Sig`).            |
+| `SCAN_CALLBACK_URL`                                        | Railway          | Vercel callback URL (`https://<host>/api/v1/internal/scan-callback`).               |
+| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Railway          | Read-only IAM principal scoped to `s3:GetObject` on the uploads bucket.             |
+| `CLAMAV_HOST`, `CLAMAV_PORT`, `SKIP_VIRUS_SCAN`            | dev-only         | Local docker-compose parity. **Never set in prod.**                                 |
 
 ---
 
@@ -216,4 +226,5 @@ Note: `STORAGE_LIMIT_EXCEEDED` moved to D01 (no longer F03's failure mode).
 | Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | By          |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
 | 2026-05-13 | Initial draft from planning conversation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Claude Code |
+| 2026-05-14 | Promoted to SPECCED. AV pipeline target switched from AWS Lambda + S3 `ObjectCreated` trigger to a Railway-hosted custom container (clamd + Node HTTP wrapper, persistent volume at `/var/lib/clamav`). Inngest orchestrator now drives the scanner over HTTP (`POST $SCANNER_URL/scan` with `Authorization: Bearer $SCANNER_INBOUND_SECRET`); the verdict still arrives over the existing HMAC-signed `/api/v1/internal/scan-callback`. New env vars: `SCANNER_URL`, `SCANNER_INBOUND_SECRET`, `SCAN_CALLBACK_URL`. Driver: Vercel cannot host clamd. Service repo path: `services/clamav-scanner/`.                                                                                                                                                                                                                                                                                                                                    | Claude Code |
 | 2026-05-13 | Resolutions to cross-module contradictions: (1) F03 sole publisher of post-scan event, renamed to `muneem/statement.cleared`; D01 emits `muneem/statement.received` upstream. (2) Column ownership split — D01 inserts; F03 owns scan lifecycle columns + post-quarantine `s3_key`. (5) Quarantine F03-only. (7) Per-file 25 MB cap moved to D01 confirm via S3 HEAD. (10) Added `muneem/statement.received` subscription. (11) Added `scan_status` enum + CHECK + transition diagram; F03 sole writer. (12) Self-failure path: 3 attempts, terminal `error`, no quarantine on error, emit `muneem/statement.scan.failed`. (13) Idempotency guard on callback: state transition only if `scan_status ∈ {pending, scanning}`. (14) HMAC verified pre-DB. (17) Storage caps moved to D01; F03 references. (18) Orphan S3 cleanup out of scope, S3 lifecycle policy tracked separately. Merge blocked on D02/D03 Inngest refresh (item 16). | Claude Code |

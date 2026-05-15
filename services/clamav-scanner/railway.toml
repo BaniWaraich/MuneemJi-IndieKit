@@ -1,0 +1,15 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "supervisord -c /etc/supervisord.conf"
+healthcheckPath = "/readyz"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+numReplicas = 1
+
+# Volume is NOT declared here — Railway attaches volumes via the dashboard or
+# `railway volume` CLI, not via railway.toml. Mount path must be /var/lib/clamav
+# so the freshclam signature DB persists across restarts. See README.md.
