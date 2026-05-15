@@ -15,8 +15,8 @@ RUN npm run build
 
 COPY supervisord.conf /etc/supervisord.conf
 
-# Railway-mounted volume target. Signature DB lives here.
-VOLUME ["/var/lib/clamav"]
+# Signature DB lives at /var/lib/clamav. Attach a Railway Volume at that
+# mount path via the dashboard — Railway rejects Docker VOLUME directives.
 
 # Wrapper HTTP port. clamd stays on 3310 (localhost only).
 EXPOSE 8080
