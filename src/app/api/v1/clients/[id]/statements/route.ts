@@ -24,19 +24,6 @@ const schema = z.object({
     .max(25 * 1024 * 1024), // 25 MB hard limit
 });
 
-// SKIP_VIRUS_SCAN skips ClamAV and marks uploads clean on ingest. Safe in dev
-// and on Vercel preview deployments; catastrophic on the live production
-// deployment — hard-fail if someone sets it there. Gate on VERCEL_ENV (not
-// NODE_ENV) because Vercel forces NODE_ENV=production for every build,
-// including previews.
-if (
-  process.env.VERCEL_ENV === "production" &&
-  process.env.SKIP_VIRUS_SCAN === "true"
-) {
-  throw new Error(
-    "SKIP_VIRUS_SCAN=true is forbidden on the production deployment",
-  );
-}
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -126,8 +113,6 @@ export async function POST(
         fileSizeBytes: BigInt(result.data.fileSizeBytes),
         currency: "INR",
         status: "processing",
-        // Always 'pending' at insert; F03 scan-orchestrator owns the
-        // transition (it short-circuits to 'clean' in SKIP_VIRUS_SCAN mode).
         scanStatus: "pending",
       })
       .returning({ id: bankStatements.id });

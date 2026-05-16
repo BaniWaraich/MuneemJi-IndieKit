@@ -77,7 +77,7 @@ Muneem Ji is not bookkeeping software. The day book is a byproduct of a solved c
 │   │   ├── statement-interpretation/ ← D03: rules + LLM classification
 │   │   ├── ai/                ← Anthropic + OpenAI clients
 │   │   ├── auth/              ← Tenant isolation helpers
-│   │   ├── storage/           ← ClamAV scan gate (merged with src/lib/s3/)
+│   │   ├── storage/           ← S3 upload helpers
 │   │   ├── validation/        ← GSTIN + Zod schemas
 │   │   ├── format/            ← INR formatting
 │   │   └── inngest/functions/ ← Inngest jobs (replaces BullMQ workers)
@@ -108,9 +108,8 @@ API routes, Inngest functions, and components do not write journal entries. No e
 **3. EVERY ENTRY MUST BALANCE.**
 The engine throws `UNBALANCED_ENTRY` if debits ≠ credits. Never catch and suppress this error.
 
-**4. SCAN BEFORE PROCESS.**
-Never run OCR or parsing on a file where `scan_status != 'clean'`.
-ClamAV is the gate. `SKIP_VIRUS_SCAN=true` is dev-only — never set in production.
+**4. VIRUS SCANNING IS DEFERRED.**
+Files are processed after lightweight validation only (MIME / magic bytes + 25 MB size cap in D01). The `scan_status` column is set to `'clean'` on upload confirmation and no downstream code gates on it. Real scanning (target: AWS GuardDuty Malware Protection for S3) is planned but not implemented — see `docs/modules/F03-file-upload-virus-scan.md`.
 
 **5. TAX MUST BE SPLIT.**
 For India GST: CGST, SGST, and IGST must each be recorded as separate journal entry lines and separate DB columns.
@@ -138,15 +137,16 @@ Check cap before generating pre-signed URL. Return 402 if exceeded.
 
 Inngest functions own async processing. API routes only send Inngest events — they never do the work inline.
 
-| Event | Inngest Function file | Was (BullMQ) | Status |
-|-------|----------------------|-------------|--------|
-| `muneem/statement.uploaded` | `inngest/functions/statement-extract.ts` | `workers/statement.worker.ts` | ✓ Migrate |
+| Event                        | Inngest Function file                      | Was (BullMQ)                  | Status    |
+| ---------------------------- | ------------------------------------------ | ----------------------------- | --------- |
+| `muneem/statement.uploaded`  | `inngest/functions/statement-extract.ts`   | `workers/statement.worker.ts` | ✓ Migrate |
 | `muneem/statement.extracted` | `inngest/functions/statement-interpret.ts` | `workers/interpret.worker.ts` | ✓ Migrate |
-| `muneem/document.uploaded` | `inngest/functions/ocr.ts` | `workers/ocr.worker.ts` | PLANNED |
-| `muneem/ocr.complete` | `inngest/functions/match.ts` | `workers/match.worker.ts` | PLANNED |
-| `muneem/export.requested` | `inngest/functions/export.ts` | `workers/export.worker.ts` | PLANNED |
+| `muneem/document.uploaded`   | `inngest/functions/ocr.ts`                 | `workers/ocr.worker.ts`       | PLANNED   |
+| `muneem/ocr.complete`        | `inngest/functions/match.ts`               | `workers/match.worker.ts`     | PLANNED   |
+| `muneem/export.requested`    | `inngest/functions/export.ts`              | `workers/export.worker.ts`    | PLANNED   |
 
 Rules for Inngest functions (same as prior worker rules):
+
 - Read/write DB via Drizzle. Do not return HTTP responses.
 - Call the Double Entry Engine when a confirmed match requires journal entries.
 - Never import from `src/app/api/`. Never call API routes.
@@ -154,20 +154,21 @@ Rules for Inngest functions (same as prior worker rules):
 
 ## Agent Skill Boundaries
 
-| Skill | Owns | Must not touch |
-|-------|------|----------------|
-| `db-handler` / `schema` | `src/db/schema/`, `drizzle/` | Business logic, API routes, Inngest functions |
-| `api` | `src/app/api/**` | `journal_entries` directly, Inngest function logic |
-| `inngest-handler` | `src/lib/inngest/functions/**` | HTTP responses, `src/app/api/` imports |
-| `engine` | `src/lib/accounting/**` | HTTP, Inngest, DB outside its own functions |
-| `frontend` | `src/app/(accountant)/`, `src/app/(owner)/`, `src/app/(auth)/`, `src/components/` | Direct DB access, event sending |
-| `email-handler` | `src/emails/**` | Financial logic, journal writes |
+| Skill                   | Owns                                                                              | Must not touch                                     |
+| ----------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `db-handler` / `schema` | `src/db/schema/`, `drizzle/`                                                      | Business logic, API routes, Inngest functions      |
+| `api`                   | `src/app/api/**`                                                                  | `journal_entries` directly, Inngest function logic |
+| `inngest-handler`       | `src/lib/inngest/functions/**`                                                    | HTTP responses, `src/app/api/` imports             |
+| `engine`                | `src/lib/accounting/**`                                                           | HTTP, Inngest, DB outside its own functions        |
+| `frontend`              | `src/app/(accountant)/`, `src/app/(owner)/`, `src/app/(auth)/`, `src/components/` | Direct DB access, event sending                    |
+| `email-handler`         | `src/emails/**`                                                                   | Financial logic, journal writes                    |
 
 ---
 
 ## V1 Scope Guards
 
 Do **NOT** implement in V1:
+
 - GST filing or return generation (GSTR-1, 3B, 2B)
 - Ireland VAT or Canada GST/HST logic — scaffold fields only
 - Multi-currency transactions (single-currency per client org in V1)
@@ -190,11 +191,6 @@ ALPHA_MODE=true                        # Disables public signup routes in Track 
 ANTHROPIC_API_KEY=                     # Sonnet (websites), Vision (OCR), Opus (parser script gen)
 OPENAI_API_KEY=                        # GPT-4o mini (statement normalisation + CSV parsing)
 
-# ClamAV virus scanning
-CLAMAV_HOST=localhost
-CLAMAV_PORT=3310
-SKIP_VIRUS_SCAN=true                   # Dev only — never true in production
-
 # Python sandbox (pdfplumber)
 PYTHON_SANDBOX_URL=http://localhost:8000
 ```
@@ -211,7 +207,7 @@ PYTHON_SANDBOX_URL=http://localhost:8000
 
 ```ts
 export const formatINR = (paise: bigint) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(
+  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(
     Number(paise) / 100,
   );
 ```
@@ -220,16 +216,15 @@ export const formatINR = (paise: bigint) =>
 
 ## Common Mistakes to Avoid
 
-| Mistake | Correct approach |
-|---------|-----------------|
-| Using `number` type for monetary amounts | Use `bigint` (paise for INR) |
-| Writing journal entries in an API route or Inngest function | Call Double Entry Engine from Inngest only |
-| Querying client data without `firmId` scope | Always scope to `firmId` or `clientOrgId` |
-| Running OCR before ClamAV returns clean | Check `scan_status === 'clean'` first |
-| Collapsing CGST + SGST into one line | They must be separate journal entry lines |
-| Using `new Date()` for financial dates | Use the explicit DATE from the transaction |
-| Sending email inline from an API route | Send Inngest event; function sends the email |
-| Blocking export on unresolved items | `had_unresolved_items` is warn-only |
-| Running LLM-generated Python in-process | All generated scripts execute in `docker/python-sandbox` only |
-| Looking up parser scripts by `bank_identifier` alone | `bank_parser_scripts` is scoped by `firmId` always |
-| Adding Muneem Ji pages to `(in-app)/` route group | Use `(accountant)/` or `(owner)/` — `(in-app)/` is Indie Kit billing only |
+| Mistake                                                     | Correct approach                                                          |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Using `number` type for monetary amounts                    | Use `bigint` (paise for INR)                                              |
+| Writing journal entries in an API route or Inngest function | Call Double Entry Engine from Inngest only                                |
+| Querying client data without `firmId` scope                 | Always scope to `firmId` or `clientOrgId`                                 |
+| Collapsing CGST + SGST into one line                        | They must be separate journal entry lines                                 |
+| Using `new Date()` for financial dates                      | Use the explicit DATE from the transaction                                |
+| Sending email inline from an API route                      | Send Inngest event; function sends the email                              |
+| Blocking export on unresolved items                         | `had_unresolved_items` is warn-only                                       |
+| Running LLM-generated Python in-process                     | All generated scripts execute in `docker/python-sandbox` only             |
+| Looking up parser scripts by `bank_identifier` alone        | `bank_parser_scripts` is scoped by `firmId` always                        |
+| Adding Muneem Ji pages to `(in-app)/` route group           | Use `(accountant)/` or `(owner)/` — `(in-app)/` is Indie Kit billing only |

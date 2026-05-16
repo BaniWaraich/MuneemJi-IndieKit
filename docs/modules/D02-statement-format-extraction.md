@@ -30,7 +30,6 @@ Bank statements arrive in dozens of formats — every Indian, Canadian, and Iris
 
 - A `bank_statements` row with:
   - `id`, `client_org_id`, `s3_key`, `filename`, `currency`
-  - `scan_status === 'clean'` (gate enforced before D02 is reachable; F03 owns the transition)
   - `status === 'processing'`
 - The raw file bytes at `s3_key` (downloaded by the worker at job start; the file never passes through Next.js).
 - The `client_orgs.firm_id` resolved from the statement's `client_org_id` (used to scope `bank_parser_scripts` lookups).
@@ -69,6 +68,7 @@ extraction_confidence: 0.95
 ---
 
 ## Transaction 1
+
 - date: 2026-04-02
 - description: NEFT/RAMESH TEXTILES/INV-4521
 - debit_minor: 4500000
@@ -76,6 +76,7 @@ extraction_confidence: 0.95
 - balance_minor: 7845600
 
 ## Transaction 2
+
 - date: 2026-04-03
 - description: UPI-9876543210@axis-PAYMENT FROM BHARAT POWER
 - debit_minor: 0
@@ -83,6 +84,7 @@ extraction_confidence: 0.95
 - balance_minor: 32845600
 
 ## Transaction 3
+
 ...
 ```
 
@@ -102,14 +104,14 @@ extraction_confidence: 0.95
 
 A scalar in `[0.0, 1.0]` summarising D02's trust in the extraction. D03 uses it to weight ambiguous-row reasoning. **Starting heuristics — open to tuning once we have alpha data:**
 
-| Path | Base | Notes |
-|---|---|---|
-| PDF, cached script, balance validation passed | 0.95 | best case |
-| PDF, fresh Opus script, balance validation passed first try | 0.80 | new format, validated |
-| PDF, cached script failed balance, regenerated, balance validation passed | 0.65 | format drifted; new script untested |
-| CSV via GPT-4o mini, balance validation passed | 0.75 | LLM-extracted preamble can drift |
-| any path, balance validation skipped (statement has reconciling adjustments — see §12) | base − 0.20 | flagged for CA |
-| any path, bank not identified by regex (`bank_identifier IS NULL`) | base − 0.10 | script not cacheable |
+| Path                                                                                   | Base        | Notes                               |
+| -------------------------------------------------------------------------------------- | ----------- | ----------------------------------- |
+| PDF, cached script, balance validation passed                                          | 0.95        | best case                           |
+| PDF, fresh Opus script, balance validation passed first try                            | 0.80        | new format, validated               |
+| PDF, cached script failed balance, regenerated, balance validation passed              | 0.65        | format drifted; new script untested |
+| CSV via GPT-4o mini, balance validation passed                                         | 0.75        | LLM-extracted preamble can drift    |
+| any path, balance validation skipped (statement has reconciling adjustments — see §12) | base − 0.20 | flagged for CA                      |
+| any path, bank not identified by regex (`bank_identifier IS NULL`)                     | base − 0.10 | script not cacheable                |
 
 Confidence values are clamped to `[0.0, 1.0]` after penalties. If `extraction_method = 'pdfplumber_new'` and the regen cycle ran (`balance_check_pass` flipped from false to true), the regen path applies; otherwise the cached or fresh-first-try value applies.
 
@@ -123,8 +125,7 @@ D02 runs as a BullMQ worker consuming jobs from `statement.queue`. There is no A
 - **Consumer:** `workers/statement.worker.ts` (post-refactor; today's worker also does D03 work — that part moves out).
 - **Worker concurrency:** 2 (matches existing config).
 - **Pre-flight gates checked at job start:**
-  1. `bank_statements.scan_status === 'clean'`. If `pending` or `error`, throw `ScanNotCleanError` and let BullMQ retry. If `infected`, throw a terminal error and mark `failed`.
-  2. Resolve `firm_id` via `client_orgs` join. Required for `bank_parser_scripts` scoping (tenant isolation).
+  1. Resolve `firm_id` via `client_orgs` join. Required for `bank_parser_scripts` scoping (tenant isolation).
 
 D02 never receives an HTTP request, never returns an HTTP response, and never imports from `app/api/`.
 
@@ -132,20 +133,20 @@ D02 never receives an HTTP request, never returns an HTTP response, and never im
 
 ## 4. Schema Tables Owned
 
-| Table | Ownership | Notes |
-|---|---|---|
-| `bank_parser_scripts` | sole writer | Per-firm, per-bank pdfplumber script cache. Atomic insert-or-noop keyed on `(firm_id, bank_identifier)` where `is_active = true`. Scripts are deactivated (not deleted) on regeneration. |
-| `bank_statements.phase1_markdown` | sole writer | The Markdown KV document. Empty before D02, populated on success. |
-| `bank_statements.period_start` | sole writer | Derived from min(transaction date). |
-| `bank_statements.period_end` | sole writer | Derived from max(transaction date). |
-| `bank_statements.currency` | sole writer | Set on D02 success from extracted currency (validated against the row's existing currency from upload — mismatch is a hard fail). |
-| `bank_statements.status` | shared | D02 owns transitions `processing → phase1_complete | empty | failed`. D03 owns `phase1_complete → parsed | failed`. F03 owns `processing` initial state. |
-| `bank_statements.error_message` | shared | D02 sets on D02-caused `failed`. D03 sets on D03-caused `failed`. |
-| `statement_parse_log` (D02 columns only) | sole writer of: `parse_method`, `balance_check_pass`, `transactions_found`, `opening_balance`, `closing_balance`, `computed_closing`, `extraction_row_count`, `extraction_sum_minor`, `parser_script_id`, `error_message`, `firm_id`, `statement_id` | One row per D02 attempt (success or failure). Wrapped in `safeWriteParseLog` so a log-write failure never masks a real extraction error. |
-| `bank_statements` (other columns) | reader only | `id`, `client_org_id`, `s3_key`, `filename`, `scan_status`. |
-| `client_orgs` | reader only | To resolve `firm_id`. |
-| `bank_transactions` | **never touches** | Owned exclusively by D03. |
-| `statement_parse_log.normalisation_mode`, `normalised_row_count`, `normalised_sum_minor` | **never touches** | Owned by D03. |
+| Table                                                                                    | Ownership                                                                                                                                                                                                                                            | Notes                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------- | --------------------------------------------- |
+| `bank_parser_scripts`                                                                    | sole writer                                                                                                                                                                                                                                          | Per-firm, per-bank pdfplumber script cache. Atomic insert-or-noop keyed on `(firm_id, bank_identifier)` where `is_active = true`. Scripts are deactivated (not deleted) on regeneration. |
+| `bank_statements.phase1_markdown`                                                        | sole writer                                                                                                                                                                                                                                          | The Markdown KV document. Empty before D02, populated on success.                                                                                                                        |
+| `bank_statements.period_start`                                                           | sole writer                                                                                                                                                                                                                                          | Derived from min(transaction date).                                                                                                                                                      |
+| `bank_statements.period_end`                                                             | sole writer                                                                                                                                                                                                                                          | Derived from max(transaction date).                                                                                                                                                      |
+| `bank_statements.currency`                                                               | sole writer                                                                                                                                                                                                                                          | Set on D02 success from extracted currency (validated against the row's existing currency from upload — mismatch is a hard fail).                                                        |
+| `bank_statements.status`                                                                 | shared                                                                                                                                                                                                                                               | D02 owns transitions `processing → phase1_complete                                                                                                                                       | empty | failed`. D03 owns `phase1_complete → parsed | failed`. D01 sets `processing` on row insert. |
+| `bank_statements.error_message`                                                          | shared                                                                                                                                                                                                                                               | D02 sets on D02-caused `failed`. D03 sets on D03-caused `failed`.                                                                                                                        |
+| `statement_parse_log` (D02 columns only)                                                 | sole writer of: `parse_method`, `balance_check_pass`, `transactions_found`, `opening_balance`, `closing_balance`, `computed_closing`, `extraction_row_count`, `extraction_sum_minor`, `parser_script_id`, `error_message`, `firm_id`, `statement_id` | One row per D02 attempt (success or failure). Wrapped in `safeWriteParseLog` so a log-write failure never masks a real extraction error.                                                 |
+| `bank_statements` (other columns)                                                        | reader only                                                                                                                                                                                                                                          | `id`, `client_org_id`, `s3_key`, `filename`.                                                                                                                                             |
+| `client_orgs`                                                                            | reader only                                                                                                                                                                                                                                          | To resolve `firm_id`.                                                                                                                                                                    |
+| `bank_transactions`                                                                      | **never touches**                                                                                                                                                                                                                                    | Owned exclusively by D03.                                                                                                                                                                |
+| `statement_parse_log.normalisation_mode`, `normalised_row_count`, `normalised_sum_minor` | **never touches**                                                                                                                                                                                                                                    | Owned by D03.                                                                                                                                                                            |
 
 ---
 
@@ -153,7 +154,7 @@ D02 never receives an HTTP request, never returns an HTTP response, and never im
 
 D02 exposes no HTTP routes. It is a worker module.
 
-The two HTTP routes that *interact* with D02's outputs are owned by other modules:
+The two HTTP routes that _interact_ with D02's outputs are owned by other modules:
 
 - `GET /api/v1/clients/:id/statements/:sid` — returns `bank_statements` including `status`, `phase1_markdown` (when CA-side debug surface needs it), `error_message`. Owned by D01 (read-side).
 - `POST /api/v1/clients/:id/statements/confirm` — confirms a guest/BO upload and enqueues `statement.queue`. Owned by D01.
@@ -169,7 +170,9 @@ If a future feature needs D02's Markdown KV exposed via HTTP, the route will liv
 **`statement.queue` — `statement.extract`**
 
 ```ts
-{ statementId: string }
+{
+  statementId: string;
+}
 ```
 
 - jobId: `statement-{statementId}` (idempotency key — duplicate enqueues are deduped by BullMQ)
@@ -184,7 +187,9 @@ If a future feature needs D02's Markdown KV exposed via HTTP, the route will liv
 **`statement.interpret.queue` — `statement.interpret`**
 
 ```ts
-{ statementId: string }
+{
+  statementId: string;
+}
 ```
 
 - jobId: `interpret-{statementId}`
@@ -204,7 +209,7 @@ D02 has no business-classification logic. The rules below govern data integrity,
 3. **Balance must reconcile.** Two checks run in sequence and must both pass:
    - **Endpoint check:** `opening_balance + Σcredits − Σdebits = closing_balance` within 1 paise tolerance.
    - **Running-balance check:** for each row `i`, `balance[i] = balance[i−1] ± amount[i]` within 1 paise.
-   On first failure with a cached script: deactivate the script, regenerate via Opus, rerun in sandbox, re-validate. On second failure: terminal, mark `failed`.
+     On first failure with a cached script: deactivate the script, regenerate via Opus, rerun in sandbox, re-validate. On second failure: terminal, mark `failed`.
 4. **Money is BIGINT.** All amount fields in the Markdown KV are integer paise/cents. The conversion from extracted major units (LLM/script returns "4500.00") to minor units (`4500_00`) is `Math.round(major * 100)`, applied at rendering time. Never truncate.
 5. **One side per row.** Exactly one of `debit_minor` / `credit_minor` is non-zero per transaction. If extraction returns both non-null, D02 throws `KvIntegrityError`.
 6. **Description is verbatim.** Multi-line continuations (rows with no date and no amount) are joined to the prior transaction's description with a single space. Otherwise the bank's narration text is preserved character-for-character.
@@ -230,9 +235,9 @@ D02 makes two distinct LLM calls in two distinct paths. Both are followed by det
 - **Rate limit (D02-owned):** Two atomic Redis counters, both keyed by UTC date and reset at midnight UTC:
   - per-firm daily cap (default 3/day, env `SCRIPT_GEN_FIRM_DAILY_CAP`)
   - global daily cap (default 20/day, env `SCRIPT_GEN_GLOBAL_DAILY_CAP`)
-  Both are incremented before the API call. Either cap exceeded → `RateLimitExceededError`. Counters expire after 24 hours.
+    Both are incremented before the API call. Either cap exceeded → `RateLimitExceededError`. Counters expire after 24 hours.
 - **Retries / fallback:** No retries on the API call itself. On failure (timeout, API error, malformed response, sandbox rejection of the generated script): one BullMQ-level retry by re-throwing.
-- **Data compliance:** PDF header text contains account holder name and account number. Anthropic zero-data-retention should be enabled on the API plan (PRD §0.2). Disclose third-party AI processing in the privacy policy (F03 / legal scope).
+- **Data compliance:** PDF header text contains account holder name and account number. Anthropic zero-data-retention should be enabled on the API plan (PRD §0.2). Disclose third-party AI processing in the privacy policy (legal scope).
 
 **System prompt (verbatim, current):**
 
@@ -369,15 +374,15 @@ Rules:
 
 Reference: PRD v6 §21.
 
-| Component | Per unit | Frequency | Notes |
-|---|---|---|---|
-| Opus 4.6 script generation (cache miss) | ~$0.21 | per new (firm, bank) pair | 4,000 in @ $15/M + 2,000 out @ $75/M; one-time cost per bank format per firm |
-| pdfplumber sandbox execution (cache hit) | ~$0.001 | per PDF statement | ECS Fargate compute, ~10s |
-| GPT-4o mini CSV extraction | ~$0.001 | per CSV statement | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M |
-| S3 read of cached script | negligible | per cache hit | |
-| Markdown KV write (Postgres) | negligible | per statement | one TEXT column update |
+| Component                                | Per unit   | Frequency                 | Notes                                                                        |
+| ---------------------------------------- | ---------- | ------------------------- | ---------------------------------------------------------------------------- |
+| Opus 4.6 script generation (cache miss)  | ~$0.21     | per new (firm, bank) pair | 4,000 in @ $15/M + 2,000 out @ $75/M; one-time cost per bank format per firm |
+| pdfplumber sandbox execution (cache hit) | ~$0.001    | per PDF statement         | ECS Fargate compute, ~10s                                                    |
+| GPT-4o mini CSV extraction               | ~$0.001    | per CSV statement         | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M                                   |
+| S3 read of cached script                 | negligible | per cache hit             |                                                                              |
+| Markdown KV write (Postgres)             | negligible | per statement             | one TEXT column update                                                       |
 
-**Mature-stage cost per statement (cache hit):** ~$0.001 of D02's $0.005 total per-statement (the rest — GPT-4o mini normalisation $0.001 + S3 storage $0.003 — belongs to D03 / F03).
+**Mature-stage cost per statement (cache hit):** ~$0.001 of D02's $0.005 total per-statement (the rest — GPT-4o mini normalisation $0.001 + S3 storage $0.003 — belongs to D03 / D01).
 
 **Watch metrics:**
 
@@ -391,25 +396,23 @@ Bounds on the firm-daily cap and global-daily cap are env-configurable so produc
 
 ## 10. Failure Modes
 
-| Failure | Trigger | Impact | Severity | Recovery |
-|---|---|---|---|---|
-| `ScanNotCleanError` | `scan_status` is `pending` or `error` when D02 starts | Job re-enters BullMQ retry queue with backoff | low | Self-resolves once F03 sets `clean`; if `error`, F03 owns the next step |
-| `ScanInfectedError` | `scan_status === 'infected'` | Statement marked `failed`, file quarantined | high | Terminal — F03 / CA support investigates |
-| `S3DownloadError` (NoSuchKey) | Object missing or deleted before D02 download | Statement marked `failed` immediately, no retry | high | Manual re-upload required |
-| `S3DownloadError` (network) | Transient S3 error | BullMQ retries with backoff | medium | Self-resolves on retry |
-| `NotAPdfNorCsvError` | Magic-byte check fails (not `%PDF-`, no CSV signature) | Statement marked `failed` | medium | User re-uploads correct file |
-| `BankIdentificationFailure` | No regex pattern matches the header text | **Soft** — proceeds without `bank_identifier`; script generated but not cached; `extraction_confidence` -0.10 penalty | low | Adds the header-text hash to `statement_parse_log` for offline pattern review |
-| `SandboxUnavailableError` | `PYTHON_SANDBOX_URL` unreachable | All PDF statements fail until sandbox returns | critical | Sandbox `/healthz` should be probed at worker startup; container restart policy + alerting (F08) |
-| `SandboxTimeoutError` | LLM-generated script ran >30s | One statement fails; sandbox kills subprocess | medium | If cached script was at fault, regen cycle replaces it; else BullMQ retry |
-| `SandboxScriptError` | Generated script throws or returns non-JSON | Statement fails this attempt | medium | If cached, triggers regen cycle; else terminal after BullMQ retries |
-| `ScriptGenerationFailure` | Anthropic API timeout, error, or empty response | Statement fails this attempt | high | BullMQ retries; rate-limit counter was already incremented (sunk cost) — see §12 |
-| `RateLimitExceededError` | Per-firm 3/day or global 20/day cap hit on a cache miss | New-bank statements blocked until UTC midnight | medium | Tune `SCRIPT_GEN_FIRM_DAILY_CAP` / `SCRIPT_GEN_GLOBAL_DAILY_CAP` |
-| `BalanceValidationError` (first) | Endpoint or running-balance check fails on cache hit | Triggers regeneration cycle (deactivate + regen + rerun) | high | Self-recovers on regen, else escalates |
-| `BalanceValidationError` (second) | Regen path also fails balance | Terminal — statement marked `failed` | high | Engineering reviews logged header text; manual override (`skip_balance_check`) is **not** in scope for D02 alpha — see §12 |
-| `CsvLlmParseError` | GPT-4o mini returns malformed JSON or schema mismatch on both attempts | Statement fails this attempt | medium | BullMQ retries the whole job |
-| `CurrencyMismatchError` | Extracted currency ≠ `bank_statements.currency` from upload | Statement marked `failed` | medium | Indicates upload-time metadata bug or wrong-statement upload; CA notified |
-| `KvIntegrityError` | Internal: `transaction_count` ≠ count of blocks, or both debit and credit non-zero on a row, or a row missing required fields at render time | Statement marked `failed` | high | Indicates a D02 code bug — Sentry alerts on this; should never occur in production |
-| `ScriptCacheScopeViolation` | Theoretical: `lookupScript` returns a script for the wrong `firm_id` | **Critical** — cross-tenant data flow | critical | Hardcoded `firm_id` filter in every query; unit-test asserts isolation; if it ever fires, halt the worker |
+| Failure                           | Trigger                                                                                                                                      | Impact                                                                                                                | Severity | Recovery                                                                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `S3DownloadError` (NoSuchKey)     | Object missing or deleted before D02 download                                                                                                | Statement marked `failed` immediately, no retry                                                                       | high     | Manual re-upload required                                                                                                  |
+| `S3DownloadError` (network)       | Transient S3 error                                                                                                                           | BullMQ retries with backoff                                                                                           | medium   | Self-resolves on retry                                                                                                     |
+| `NotAPdfNorCsvError`              | Magic-byte check fails (not `%PDF-`, no CSV signature)                                                                                       | Statement marked `failed`                                                                                             | medium   | User re-uploads correct file                                                                                               |
+| `BankIdentificationFailure`       | No regex pattern matches the header text                                                                                                     | **Soft** — proceeds without `bank_identifier`; script generated but not cached; `extraction_confidence` -0.10 penalty | low      | Adds the header-text hash to `statement_parse_log` for offline pattern review                                              |
+| `SandboxUnavailableError`         | `PYTHON_SANDBOX_URL` unreachable                                                                                                             | All PDF statements fail until sandbox returns                                                                         | critical | Sandbox `/healthz` should be probed at worker startup; container restart policy + alerting (F08)                           |
+| `SandboxTimeoutError`             | LLM-generated script ran >30s                                                                                                                | One statement fails; sandbox kills subprocess                                                                         | medium   | If cached script was at fault, regen cycle replaces it; else BullMQ retry                                                  |
+| `SandboxScriptError`              | Generated script throws or returns non-JSON                                                                                                  | Statement fails this attempt                                                                                          | medium   | If cached, triggers regen cycle; else terminal after BullMQ retries                                                        |
+| `ScriptGenerationFailure`         | Anthropic API timeout, error, or empty response                                                                                              | Statement fails this attempt                                                                                          | high     | BullMQ retries; rate-limit counter was already incremented (sunk cost) — see §12                                           |
+| `RateLimitExceededError`          | Per-firm 3/day or global 20/day cap hit on a cache miss                                                                                      | New-bank statements blocked until UTC midnight                                                                        | medium   | Tune `SCRIPT_GEN_FIRM_DAILY_CAP` / `SCRIPT_GEN_GLOBAL_DAILY_CAP`                                                           |
+| `BalanceValidationError` (first)  | Endpoint or running-balance check fails on cache hit                                                                                         | Triggers regeneration cycle (deactivate + regen + rerun)                                                              | high     | Self-recovers on regen, else escalates                                                                                     |
+| `BalanceValidationError` (second) | Regen path also fails balance                                                                                                                | Terminal — statement marked `failed`                                                                                  | high     | Engineering reviews logged header text; manual override (`skip_balance_check`) is **not** in scope for D02 alpha — see §12 |
+| `CsvLlmParseError`                | GPT-4o mini returns malformed JSON or schema mismatch on both attempts                                                                       | Statement fails this attempt                                                                                          | medium   | BullMQ retries the whole job                                                                                               |
+| `CurrencyMismatchError`           | Extracted currency ≠ `bank_statements.currency` from upload                                                                                  | Statement marked `failed`                                                                                             | medium   | Indicates upload-time metadata bug or wrong-statement upload; CA notified                                                  |
+| `KvIntegrityError`                | Internal: `transaction_count` ≠ count of blocks, or both debit and credit non-zero on a row, or a row missing required fields at render time | Statement marked `failed`                                                                                             | high     | Indicates a D02 code bug — Sentry alerts on this; should never occur in production                                         |
+| `ScriptCacheScopeViolation`       | Theoretical: `lookupScript` returns a script for the wrong `firm_id`                                                                         | **Critical** — cross-tenant data flow                                                                                 | critical | Hardcoded `firm_id` filter in every query; unit-test asserts isolation; if it ever fires, halt the worker                  |
 
 **Statement marked `empty`** is not a failure. It is a terminal success state: D02 extracted zero transactions (genuinely blank statement, or a structure D02 couldn't find rows in). The CA is notified to investigate the file. D03 is **not** enqueued for empty statements.
 
@@ -419,9 +422,8 @@ Bounds on the firm-daily cap and global-daily cap are env-configurable so produc
 
 **Depends on (modules):**
 
-- **F03 — file-upload-virus-scan** for `scan_status === 'clean'` gate, S3 object presence, and `bank_statements` row creation. D02 will not run until F03 marks the file clean.
 - **F02 — tenant-isolation** for `firm_id` resolution from `client_org_id`.
-- **D01 — bank-statement-upload** as the producer that enqueues `statement.queue`. D01 owns the upload UX and the API route that confirms the upload.
+- **D01 — bank-statement-upload** as the producer that emits `muneem/statement.uploaded` after the confirm route accepts the upload.
 
 **Depended on by (modules):**
 
@@ -463,7 +465,7 @@ Bounds on the firm-daily cap and global-daily cap are env-configurable so produc
 1. **`extraction_confidence` calibration.** The values in §2.2 are starting heuristics. Once we have ≥30 alpha statements, replay them through D02 and compute the empirical correlation between confidence and downstream D03 disagreement-with-CA rate. Adjust the table.
 2. **Manual override for legitimate balance mismatches.** Some statements have legitimate reconciling items (adjustments, charges not shown as rows) that will never satisfy `opening + credits − debits = closing`. The PRD-archived design doc proposed a `skip_balance_check` flag exposed only in the CA admin UI. **Out of scope for D02 alpha** — alpha will mark such statements `failed` and CA support will manually re-upload with adjustments. Re-evaluate before Track 2.
 3. **Global script cache.** Scripts are per-firm today (security default). A read-only global script cache would cut Opus calls dramatically once 10+ firms are onboarded but introduces a cross-firm data-flow surface. Decide before Track 2 launch.
-4. **Per-file size cap.** S3 pre-sign enforces a total storage cap (F03) but not a per-file cap beyond the sandbox's 12 MB rejection. A pre-upload 15 MB cap would prevent the confusing "got through S3, sandbox 400" failure mode. Probably belongs in F03, but flag for coordination.
+4. **Per-file size cap.** D01 confirm enforces a 25 MB cap via S3 HEAD; the sandbox additionally rejects >12 MB. The gap is intentional but flagged for review.
 5. **Rate-limit cap accounting on Anthropic outage.** If the API call fails, we still incremented the counter. Ideally the failed call decrements on terminal error. Low-impact in alpha; revisit.
 6. **Sandbox health-check at worker startup.** `GET /healthz` should fail-fast the worker process if sandbox is unreachable, rather than burning 35s timeouts on every job. Owner: this module on the worker side; sandbox image owner on the infra side.
 7. **CSV magic-byte detection.** Currently distinguished from PDF by absence of `%PDF-`. Adding a positive CSV check (UTF-8 / common delimiter detection) would catch garbage uploads earlier. Low priority.
@@ -473,6 +475,6 @@ Bounds on the firm-daily cap and global-daily cap are env-configurable so produc
 
 ## 13. Change Log
 
-| Date | Change | By |
-|---|---|---|
+| Date       | Change                                                                                                                                                                                                                                                                                                                                           | By            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
 | 2026-05-02 | Initial spec; status `SPECCED`. Lifts and rescopes content from `docs/archive/bank-statement-parser-design.md` (which mixed D02 + D03 concerns). Codifies the Markdown KV format, the `extraction_confidence` heuristic, the queue split (`statement.queue` consumed; `statement.interpret.queue` published), and the schema ownership boundary. | Bani / Claude |

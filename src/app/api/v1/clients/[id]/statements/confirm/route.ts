@@ -14,10 +14,8 @@ import { s3Client, s3Bucket } from "@/lib/muneem-storage/s3";
 
 const schema = z.object({ statementId: z.string().uuid() });
 
-// 25 MB per-file cap, enforced via S3 HEAD here (not at F03). See F03 §7.
+// 25 MB per-file cap, enforced via S3 HEAD here.
 const MAX_STATEMENT_BYTES = 25 * 1024 * 1024;
-
-const SKIP_VIRUS_SCAN = process.env.SKIP_VIRUS_SCAN === "true";
 
 export async function POST(
   request: Request,
@@ -43,7 +41,7 @@ export async function POST(
         eq(bankStatements.id, statementId),
         eq(bankStatements.clientOrgId, id),
       ),
-      columns: { id: true, scanStatus: true, status: true, s3Key: true },
+      columns: { id: true, status: true, s3Key: true },
     });
 
     if (!statement) {
@@ -80,15 +78,19 @@ export async function POST(
       );
     }
 
-    // Hand off to F03. F03 owns scan_status transitions and the post-scan
-    // `muneem/statement.cleared` emit. In dev SKIP_VIRUS_SCAN=true, F03's
-    // orchestrator short-circuits to clean immediately.
+    // Virus scanning is deferred (see docs/modules/F03-file-upload-virus-scan.md).
+    // Mark clean immediately and hand off to D02.
+    await db
+      .update(bankStatements)
+      .set({ scanStatus: "clean" })
+      .where(eq(bankStatements.id, statementId));
+
     await inngest.send({
-      name: "muneem/statement.received",
+      name: "muneem/statement.uploaded",
       data: { statementId },
     });
 
-    return NextResponse.json({ queued: true, skipScan: SKIP_VIRUS_SCAN });
+    return NextResponse.json({ queued: true });
   } catch (e) {
     if (e instanceof UnauthorizedError) {
       return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });

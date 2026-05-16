@@ -10,15 +10,15 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 
 ## Foundation (cross-cutting; every module depends on these)
 
-| ID  | Module                       | Status  | One-liner                                                                                                                                                                                           |
-| --- | ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F01 | auth-sessions                | PLANNED | NextAuth.js v5 with three session types (CA, linked-BO, independent-BO) + guest tokens; gates every protected route.                                                                                |
-| F02 | tenant-isolation             | PLANNED | `ca_firm_id` / `client_org_id` scoping helpers + ownership guards used by every API query.                                                                                                          |
-| F03 | file-upload-virus-scan       | PLANNED | Pre-signed S3 URL issuance, ClamAV scan gate, `scan_status` lifecycle, BO storage-cap pre-check; everything downstream waits on `clean`. Owns sanctioned-country block and 7-year retention policy. |
-| F05 | email-delivery               | PLANNED | SES sender + transactional templates (invites, reminders, enquiries); `SEND_EMAILS=false` logs to console.                                                                                          |
-| F06 | notifications-inbox          | PLANNED | In-app notification fan-out + unread state for CAs and BOs.                                                                                                                                         |
-| F07 | audit-logging                | PLANNED | Append-only audit trail for sensitive writes (verification, invites, journal entries, exports). Owns GDPR data-subject-access scaffolding.                                                          |
-| F08 | observability-error-handling | PLANNED | Sentry/equivalent integration, `statement_parse_log` analytics surface, alerting policy. Track 2 prerequisite — placeholder so it isn't forgotten.                                                  |
+| ID  | Module                       | Status           | One-liner                                                                                                                                                                       |
+| --- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F01 | auth-sessions                | PLANNED          | NextAuth.js v5 with three session types (CA, linked-BO, independent-BO) + guest tokens; gates every protected route.                                                            |
+| F02 | tenant-isolation             | PLANNED          | `ca_firm_id` / `client_org_id` scoping helpers + ownership guards used by every API query.                                                                                      |
+| F03 | file-upload-virus-scan       | DRAFT — deferred | Virus scanning deferred (Railway/ClamAV removed; target: AWS GuardDuty Malware Protection for S3). `scan_status` column retained but ungated; D01 confirm sets it to `'clean'`. |
+| F05 | email-delivery               | PLANNED          | SES sender + transactional templates (invites, reminders, enquiries); `SEND_EMAILS=false` logs to console.                                                                      |
+| F06 | notifications-inbox          | PLANNED          | In-app notification fan-out + unread state for CAs and BOs.                                                                                                                     |
+| F07 | audit-logging                | PLANNED          | Append-only audit trail for sensitive writes (verification, invites, journal entries, exports). Owns GDPR data-subject-access scaffolding.                                      |
+| F08 | observability-error-handling | PLANNED          | Sentry/equivalent integration, `statement_parse_log` analytics surface, alerting policy. Track 2 prerequisite — placeholder so it isn't forgotten.                              |
 
 ## CA acquisition & practice surface
 

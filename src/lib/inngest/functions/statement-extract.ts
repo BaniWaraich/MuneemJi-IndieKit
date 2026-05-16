@@ -2,7 +2,7 @@
  * D02: Statement Format Extraction — Inngest function.
  * Replaces workers/statement.worker.ts from the original BullMQ architecture.
  *
- * Event: "muneem/statement.cleared" (F03 emits after scan_status='clean')
+ * Event: "muneem/statement.uploaded" (D01 confirm route emits after S3 PUT)
  * Payload: { statementId: string }
  *
  * On completion, sends "muneem/statement.extracted" to trigger D03.
@@ -182,7 +182,7 @@ export const statementExtract = inngest.createFunction(
     name: "Muneem: D02 Statement Format Extraction",
     concurrency: { limit: 2 },
     retries: 3,
-    triggers: [{ event: "muneem/statement.cleared" }],
+    triggers: [{ event: "muneem/statement.uploaded" }],
   },
   async ({
     event,
@@ -208,13 +208,6 @@ export const statementExtract = inngest.createFunction(
           status: statement.status,
         });
         return;
-      }
-
-      // CLAUDE.md rule #4: scan before process
-      if (statement.scanStatus !== "clean") {
-        throw new Error(
-          `refusing to process statement with scan_status='${statement.scanStatus}' (must be 'clean')`,
-        );
       }
 
       const firmId = await resolveFirmId(statement.clientOrgId);
