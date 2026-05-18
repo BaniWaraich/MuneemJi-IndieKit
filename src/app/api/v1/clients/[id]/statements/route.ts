@@ -44,7 +44,7 @@ export async function POST(
     // Resolve firm ID for storage cap check.
     const clientOrg = await db.query.clientOrgs.findFirst({
       where: eq(clientOrgs.id, id),
-      columns: { firmId: true },
+      columns: { firmId: true, currency: true },
     });
     if (!clientOrg) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
@@ -111,7 +111,7 @@ export async function POST(
         s3Key,
         filename: result.data.filename,
         fileSizeBytes: BigInt(result.data.fileSizeBytes),
-        currency: "INR",
+        currency: clientOrg.currency,
         status: "processing",
         scanStatus: "pending",
       })
