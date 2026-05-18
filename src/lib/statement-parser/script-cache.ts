@@ -1,11 +1,11 @@
-import { createHash } from 'crypto';
-import { eq, and, sql } from 'drizzle-orm';
-import Anthropic from '@anthropic-ai/sdk';
-import { db } from '@/db';
-import { bankParserScripts } from '@/db/schema/muneem';
-import { extractCodeBlock } from './extract-code-block';
+import { createHash } from "crypto";
+import { eq, and, sql } from "drizzle-orm";
+import OpenAI from "openai";
+import { db } from "@/db";
+import { bankParserScripts } from "@/db/schema/muneem";
+import { extractCodeBlock } from "./extract-code-block";
 
-const SCRIPT_GENERATION_MODEL = 'claude-opus-4-6';
+const SCRIPT_GENERATION_MODEL = "gpt-4o";
 
 const SCRIPT_GENERATION_PROMPT = `You are an expert Python developer specialising in PDF data extraction.
 I am providing the raw text content of a bank statement PDF.
@@ -46,8 +46,9 @@ Also extract from the statement header:
 
 Return the complete Python script only. No explanation. No markdown fences.`;
 
-let _anthropic: Anthropic | undefined;
-const getAnthropic = () => (_anthropic ??= new Anthropic());
+let _openai: OpenAI | undefined;
+const getOpenAI = () =>
+  (_openai ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
 export async function lookupScript(
   firmId: string,
@@ -67,14 +68,14 @@ export async function generateScript(
   rawHeaderText: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await getAnthropic().messages.create(
+  const res = await getOpenAI().chat.completions.create(
     {
       model: SCRIPT_GENERATION_MODEL,
-      max_tokens: 16384,
-      system: SCRIPT_GENERATION_PROMPT,
+      temperature: 0,
       messages: [
+        { role: "system", content: SCRIPT_GENERATION_PROMPT },
         {
-          role: 'user',
+          role: "user",
           content: `Here is the raw text from the first 2 pages of the bank statement PDF:\n\n<<<\n${rawHeaderText}\n>>>\n\nWrite the complete Python pdfplumber extraction script.`,
         },
       ],
@@ -82,16 +83,16 @@ export async function generateScript(
     { timeout: 120_000, signal },
   );
 
-  const textBlock = res.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('Claude returned no text block for script generation');
+  const raw = res.choices[0]?.message?.content?.trim();
+  if (!raw) {
+    throw new Error("OpenAI returned empty response for script generation");
   }
 
-  return extractCodeBlock(textBlock.text);
+  return extractCodeBlock(raw);
 }
 
 function sha256(text: string): string {
-  return createHash('sha256').update(text, 'utf-8').digest('hex');
+  return createHash("sha256").update(text, "utf-8").digest("hex");
 }
 
 /**
