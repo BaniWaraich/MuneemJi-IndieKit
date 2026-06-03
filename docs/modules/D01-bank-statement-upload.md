@@ -1,9 +1,9 @@
 ---
 id: D01
 name: bank-statement-upload
-status: SPECCED
+status: IMPLEMENTED
 owners: ["api", "frontend", "db-handler"]
-last_updated: 2026-05-12
+last_updated: 2026-06-02
 ---
 
 # D01 — Bank Statement Upload
@@ -14,7 +14,7 @@ last_updated: 2026-05-12
 
 ## Status
 
-`SPECCED`
+`IMPLEMENTED` (2026-06-02) — All three API routes implemented: `POST /api/v1/clients/:id/statements` (pre-signed URL + row creation), `POST /api/v1/clients/:id/statements/confirm` (S3 HEAD size check + `scan_status='clean'` + `muneem/statement.uploaded` Inngest event), `GET /api/v1/clients/:id/statements/:sid/transactions` (transaction list for parsed statements). Storage cap (500 MB/firm, 50 rows/client) enforced. Tenant auth via `requireFirmOrOwnerForClient`.
 
 ---
 
@@ -191,6 +191,7 @@ None. Module is fully specced for V1 scope.
 
 ## 13. Change Log
 
-| Date       | Change       | By          |
-| ---------- | ------------ | ----------- |
-| 2026-05-12 | Initial spec | Claude Code |
+| Date       | Change                                                                  | By            |
+| ---------- | ----------------------------------------------------------------------- | ------------- |
+| 2026-05-12 | Initial spec                                                            | Claude Code   |
+| 2026-06-02 | Status → `IMPLEMENTED`. All API routes confirmed present and functional. | Bani / Claude |

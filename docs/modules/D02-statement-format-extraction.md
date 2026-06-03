@@ -2,8 +2,8 @@
 id: D02
 name: statement-format-extraction
 status: IMPLEMENTED
-owners: [worker, schema]
-last_updated: 2026-05-03
+owners: [inngest, schema]
+last_updated: 2026-06-02
 ---
 
 # D02 — Statement Format Extraction
@@ -14,13 +14,15 @@ last_updated: 2026-05-03
 
 ## Status
 
-`IMPLEMENTED` (2026-05-03) — `workers/statement.worker.ts` is now D02-only. PDF and CSV paths both end at `bank_statements.phase1_markdown` + `status='phase1_complete'|'empty'|'failed'` + parse-log row + (on success and non-empty) `statement.interpret` enqueue. No `bank_transactions` writes from D02. The deterministic Markdown KV renderer lives at `lib/statement-parser/render-markdown-kv.ts`. `lib/statement-parser/csv-llm-parser.ts` was reduced to the D02 boundary — `amount_minor` and `needs_invoice` removed from prompt + Zod schema. `lib/statement-parser/normalise.ts` retired (deleted; logic moved to D03's `classify-llm.ts`). No schema changes for D02 itself.
+`IMPLEMENTED` (2026-06-02) — Inngest function `inngest/functions/statement-extract.ts` is the D02 worker, triggered by `muneem/statement.uploaded`. Both PDF and CSV paths end at `bank_statements.phase1_markdown` + `status='phase1_complete'|'empty'|'failed'` + one `statement_parse_log` row + (on success and non-empty) `muneem/statement.extracted` event to trigger D03.
+
+**Architecture pivot from original spec:** The original design generated pdfplumber Python scripts via Claude Opus and cached them per `(firm_id, bank_identifier)`. This was removed as too fragile. The current approach uses pdfplumber (via a baked-in `extract-pages.py` sandbox script) to extract raw whitespace-layout text per page, then sends each page's text to GPT-4o mini for transaction extraction. This is more robust across format variations. `bank_parser_scripts`, `identify-bank.ts`, `script-cache.ts`, `run-pdfplumber.ts`, and `rate-limit.ts` were all removed as part of this pivot.
 
 ---
 
 ## 1. Purpose
 
-Bank statements arrive in dozens of formats — every Indian, Canadian, and Irish bank uses a different PDF layout, and CSVs vary wildly in preamble length and column ordering. Without a uniform intermediate representation, every downstream consumer (D03, the day-book export, future reporting) would have to handle that variability. D02 absorbs all the format-specific complexity — pdfplumber column detection, multi-page handling, Claude-generated parsers, CSV preamble skipping — and emits a single canonical shape: Markdown frontmatter for statement metadata + one Markdown block per transaction. After D02, no module ever sees the raw PDF or CSV again.
+Bank statements arrive in dozens of formats — every Indian, Canadian, and Irish bank uses a different PDF layout, and CSVs vary wildly in preamble length and column ordering. Without a uniform intermediate representation, every downstream consumer (D03, the day-book export, future reporting) would have to handle that variability. D02 absorbs all the format-specific complexity — pdfplumber page-text extraction, multi-page chunking, LLM page interpretation, CSV preamble skipping — and emits a single canonical shape: Markdown frontmatter for statement metadata + one Markdown block per transaction. After D02, no module ever sees the raw PDF or CSV again.
 
 ---
 
@@ -31,8 +33,8 @@ Bank statements arrive in dozens of formats — every Indian, Canadian, and Iris
 - A `bank_statements` row with:
   - `id`, `client_org_id`, `s3_key`, `filename`, `currency`
   - `status === 'processing'`
-- The raw file bytes at `s3_key` (downloaded by the worker at job start; the file never passes through Next.js).
-- The `client_orgs.firm_id` resolved from the statement's `client_org_id` (used to scope `bank_parser_scripts` lookups).
+- The raw file bytes at `s3_key` (downloaded by the Inngest function at job start; the file never passes through Next.js).
+- The `client_orgs.firm_id` resolved from the statement's `client_org_id` (used for tenant-scoped logging).
 
 **Outputs**
 
@@ -41,8 +43,7 @@ Bank statements arrive in dozens of formats — every Indian, Canadian, and Iris
 - `bank_statements.period_start`, `period_end`, `currency` — derived from extracted data and persisted on the row.
 - `bank_statements.error_message` — populated only on `failed`.
 - One row inserted into `statement_parse_log` for the extraction attempt (D02's columns only — see §4).
-- On success and non-empty: a `statement.interpret` job is enqueued onto `statement.interpret.queue` with `{ statementId }`.
-- New rows in `bank_parser_scripts` when a fresh script was generated and validated (atomic `INSERT ... ON CONFLICT DO NOTHING` keyed on `(firm_id, bank_identifier)` where `is_active = true`).
+- On success and non-empty: `muneem/statement.extracted` event sent with `{ statementId }` to trigger D03.
 
 D02 explicitly does **not** produce: `bank_transactions` rows, `needs_invoice` flags, transaction categories, vendor identifications, journal entries, day book lines, or reminders. Those are downstream concerns.
 
@@ -55,7 +56,7 @@ The output of D02 is one document per statement, stored as a string in `bank_sta
 account_holder: SHARMA TEXTILES PVT LTD
 account_number_last4: "4821"
 bank_name: HDFC Bank
-bank_identifier: hdfc
+bank_identifier: null
 country: IN
 period_start: 2026-04-01
 period_end: 2026-04-30
@@ -63,8 +64,8 @@ opening_balance_minor: 12345600
 closing_balance_minor: 8765400
 currency: INR
 transaction_count: 47
-extraction_method: pdfplumber_cached
-extraction_confidence: 0.95
+extraction_method: pdf_llm
+extraction_confidence: 0.75
 ---
 
 ## Transaction 1
@@ -93,39 +94,38 @@ extraction_confidence: 0.95
 - All amounts are integer minor units (paise / cents) per the project-wide `BIGINT` rule. Never major units. Never floats.
 - Exactly one of `debit_minor` / `credit_minor` is non-zero per transaction. The other is `0`. Never `null`. Never both non-zero.
 - `balance_minor` is the running balance after this transaction.
-- `description` is the bank-supplied narration verbatim — D02 does not strip prefixes, summarise, translate, or normalise vendor names. Only whitespace collapse (multi-line continuations are joined with a single space, see §3 of the Opus prompt).
+- `description` is the bank-supplied narration verbatim — D02 does not strip prefixes, summarise, translate, or normalise vendor names. Only whitespace collapse (multi-line continuations are joined with a single space).
 - `date` is ISO 8601 (`YYYY-MM-DD`).
 - `account_number_last4` is quoted to preserve leading zeros.
-- `bank_identifier` is `null` when bank-identification regex didn't match — the `extraction_confidence` then carries a -0.10 penalty.
+- `bank_identifier` is always `null` in the current implementation — bank identification is deferred (see §12). The `extraction_confidence` penalty for unknown bank (`−0.10`) always applies.
 - Frontmatter `transaction_count` must equal the count of `## Transaction N` blocks. The renderer fails closed if it doesn't (see `KvIntegrityError`).
 - Transactions are emitted in statement order (earliest first).
 
 ### 2.2 `extraction_confidence` heuristic
 
-A scalar in `[0.0, 1.0]` summarising D02's trust in the extraction. D03 uses it to weight ambiguous-row reasoning. **Starting heuristics — open to tuning once we have alpha data:**
+A scalar in `[0.0, 1.0]` summarising D02's trust in the extraction. D03 uses it to weight ambiguous-row reasoning. **Current heuristics:**
 
-| Path                                                                                   | Base        | Notes                               |
-| -------------------------------------------------------------------------------------- | ----------- | ----------------------------------- |
-| PDF, cached script, balance validation passed                                          | 0.95        | best case                           |
-| PDF, fresh Opus script, balance validation passed first try                            | 0.80        | new format, validated               |
-| PDF, cached script failed balance, regenerated, balance validation passed              | 0.65        | format drifted; new script untested |
-| CSV via GPT-4o mini, balance validation passed                                         | 0.75        | LLM-extracted preamble can drift    |
-| any path, balance validation skipped (statement has reconciling adjustments — see §12) | base − 0.20 | flagged for CA                      |
-| any path, bank not identified by regex (`bank_identifier IS NULL`)                     | base − 0.10 | script not cacheable                |
+| Path                                                           | Base  | Notes                                                          |
+| -------------------------------------------------------------- | ----- | -------------------------------------------------------------- |
+| PDF, GPT-4o mini per-page, balance validation passed           | 0.75  | LLM per-page extraction — good but can miss continuation rows  |
+| CSV, GPT-4o mini, balance validation passed                    | 0.75  | LLM-extracted preamble can drift; same confidence as PDF path  |
+| any path, balance validation skipped (reconciling adjustments) | −0.20 | applied as penalty to base                                     |
+| any path, bank not identified (`bank_identifier IS NULL`)      | −0.10 | always applies in current implementation (bank ID is deferred) |
 
-Confidence values are clamped to `[0.0, 1.0]` after penalties. If `extraction_method = 'pdfplumber_new'` and the regen cycle ran (`balance_check_pass` flipped from false to true), the regen path applies; otherwise the cached or fresh-first-try value applies.
+Confidence values are clamped to `[0.0, 1.0]` after penalties.
 
 ---
 
 ## 3. Trigger Mechanism
 
-D02 runs as a BullMQ worker consuming jobs from `statement.queue`. There is no API route that invokes D02 directly.
+D02 runs as an Inngest function consuming `muneem/statement.uploaded` events. There is no API route that invokes D02 directly.
 
-- **Producer:** D01 (`bank-statement-upload`) enqueues a `statement.queue` job with `jobId: "statement-{id}"`, `attempts: 3`, exponential backoff starting at 5s, after the upload API confirms S3 receipt and writes the `bank_statements` row.
-- **Consumer:** `workers/statement.worker.ts` (post-refactor; today's worker also does D03 work — that part moves out).
-- **Worker concurrency:** 2 (matches existing config).
-- **Pre-flight gates checked at job start:**
-  1. Resolve `firm_id` via `client_orgs` join. Required for `bank_parser_scripts` scoping (tenant isolation).
+- **Producer:** D01 (`bank-statement-upload`) sends `muneem/statement.uploaded` with `{ data: { statementId } }` after the confirm route verifies the S3 PUT and transitions the `bank_statements` row to `processing`.
+- **Consumer:** `inngest/functions/statement-extract.ts` — function id `muneem-statement-extract`.
+- **Retries:** Inngest default retry policy (up to 4 retries with exponential backoff).
+- **Pre-flight gates checked at step start:**
+  1. Resolve `firm_id` via `client_orgs` join. Required for tenant-scoped logging.
+  2. Fetch `bank_statements` row; verify `status === 'processing'`. Any other status → no-op (idempotency guard).
 
 D02 never receives an HTTP request, never returns an HTTP response, and never imports from `app/api/`.
 
@@ -133,41 +133,38 @@ D02 never receives an HTTP request, never returns an HTTP response, and never im
 
 ## 4. Schema Tables Owned
 
-| Table                                                                                    | Ownership                                                                                                                                                                                                                                            | Notes                                                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------- | --------------------------------------------- |
-| `bank_parser_scripts`                                                                    | sole writer                                                                                                                                                                                                                                          | Per-firm, per-bank pdfplumber script cache. Atomic insert-or-noop keyed on `(firm_id, bank_identifier)` where `is_active = true`. Scripts are deactivated (not deleted) on regeneration. |
-| `bank_statements.phase1_markdown`                                                        | sole writer                                                                                                                                                                                                                                          | The Markdown KV document. Empty before D02, populated on success.                                                                                                                        |
-| `bank_statements.period_start`                                                           | sole writer                                                                                                                                                                                                                                          | Derived from min(transaction date).                                                                                                                                                      |
-| `bank_statements.period_end`                                                             | sole writer                                                                                                                                                                                                                                          | Derived from max(transaction date).                                                                                                                                                      |
-| `bank_statements.currency`                                                               | sole writer                                                                                                                                                                                                                                          | Set on D02 success from extracted currency (validated against the row's existing currency from upload — mismatch is a hard fail).                                                        |
-| `bank_statements.status`                                                                 | shared                                                                                                                                                                                                                                               | D02 owns transitions `processing → phase1_complete                                                                                                                                       | empty | failed`. D03 owns `phase1_complete → parsed | failed`. D01 sets `processing` on row insert. |
-| `bank_statements.error_message`                                                          | shared                                                                                                                                                                                                                                               | D02 sets on D02-caused `failed`. D03 sets on D03-caused `failed`.                                                                                                                        |
-| `statement_parse_log` (D02 columns only)                                                 | sole writer of: `parse_method`, `balance_check_pass`, `transactions_found`, `opening_balance`, `closing_balance`, `computed_closing`, `extraction_row_count`, `extraction_sum_minor`, `parser_script_id`, `error_message`, `firm_id`, `statement_id` | One row per D02 attempt (success or failure). Wrapped in `safeWriteParseLog` so a log-write failure never masks a real extraction error.                                                 |
-| `bank_statements` (other columns)                                                        | reader only                                                                                                                                                                                                                                          | `id`, `client_org_id`, `s3_key`, `filename`.                                                                                                                                             |
-| `client_orgs`                                                                            | reader only                                                                                                                                                                                                                                          | To resolve `firm_id`.                                                                                                                                                                    |
-| `bank_transactions`                                                                      | **never touches**                                                                                                                                                                                                                                    | Owned exclusively by D03.                                                                                                                                                                |
-| `statement_parse_log.normalisation_mode`, `normalised_row_count`, `normalised_sum_minor` | **never touches**                                                                                                                                                                                                                                    | Owned by D03.                                                                                                                                                                            |
+| Table                                    | Ownership                                                                                                                                                                                                                                            | Notes                                                                                                                                                                                       |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bank_statements.phase1_markdown`        | sole writer                                                                                                                                                                                                                                          | The Markdown KV document. Empty before D02, populated on success.                                                                                                                           |
+| `bank_statements.period_start`           | sole writer                                                                                                                                                                                                                                          | Derived from min(transaction date).                                                                                                                                                         |
+| `bank_statements.period_end`             | sole writer                                                                                                                                                                                                                                          | Derived from max(transaction date).                                                                                                                                                         |
+| `bank_statements.currency`               | sole writer                                                                                                                                                                                                                                          | Set on D02 success from extracted currency (validated against the row's existing currency from upload).                                                                                     |
+| `bank_statements.status`                 | shared                                                                                                                                                                                                                                               | D02 owns transitions `processing → phase1_complete \| empty \| failed`. D03 owns `phase1_complete → parsed \| failed`. D01 sets `processing` on row insert.                                 |
+| `bank_statements.error_message`          | shared                                                                                                                                                                                                                                               | D02 sets on D02-caused `failed`. D03 sets on D03-caused `failed`.                                                                                                                           |
+| `statement_parse_log` (D02 columns only) | sole writer of: `parse_method`, `balance_check_pass`, `transactions_found`, `opening_balance`, `closing_balance`, `computed_closing`, `extraction_row_count`, `extraction_sum_minor`, `parser_script_id`, `error_message`, `firm_id`, `statement_id` | One row per D02 attempt. Wrapped in `safeWriteParseLog` so a log-write failure never masks a real extraction error.                                                                         |
+| `bank_statements` (other columns)        | reader only                                                                                                                                                                                                                                          | `id`, `client_org_id`, `s3_key`, `filename`.                                                                                                                                                |
+| `client_orgs`                            | reader only                                                                                                                                                                                                                                          | To resolve `firm_id`.                                                                                                                                                                       |
+| `bank_parser_scripts`                    | **not used**                                                                                                                                                                                                                                         | Table retained in schema but never written to. Will be dropped in a future migration once the script-caching design is formally retired or redesigned. `parser_script_id` is always `null`. |
+| `bank_transactions`                      | **never touches**                                                                                                                                                                                                                                    | Owned exclusively by D03.                                                                                                                                                                   |
 
 ---
 
 ## 5. API Contracts
 
-D02 exposes no HTTP routes. It is a worker module.
+D02 exposes no HTTP routes. It is an Inngest worker module.
 
 The two HTTP routes that _interact_ with D02's outputs are owned by other modules:
 
-- `GET /api/v1/clients/:id/statements/:sid` — returns `bank_statements` including `status`, `phase1_markdown` (when CA-side debug surface needs it), `error_message`. Owned by D01 (read-side).
-- `POST /api/v1/clients/:id/statements/confirm` — confirms a guest/BO upload and enqueues `statement.queue`. Owned by D01.
-
-If a future feature needs D02's Markdown KV exposed via HTTP, the route will live in D01 (statement read surface), not D02.
+- `GET /api/v1/clients/:id/statements/:sid` — returns `bank_statements` including `status`, `phase1_markdown`, `error_message`. Owned by D01 (read-side).
+- `POST /api/v1/clients/:id/statements/confirm` — confirms a guest/BO upload and sends `muneem/statement.uploaded`. Owned by D01.
 
 ---
 
-## 6. Queue Jobs
+## 6. Events
 
 ### Consumes
 
-**`statement.queue` — `statement.extract`**
+**`muneem/statement.uploaded`**
 
 ```ts
 {
@@ -175,16 +172,12 @@ If a future feature needs D02's Markdown KV exposed via HTTP, the route will liv
 }
 ```
 
-- jobId: `statement-{statementId}` (idempotency key — duplicate enqueues are deduped by BullMQ)
-- attempts: 3
-- backoff: exponential, 5s base
-- concurrency: 2
-
-**Idempotency:** D02 is safe to retry. On retry, the worker re-runs from scratch — the only persistent side effects of a partial run are `statement_parse_log` rows (append-only, expected) and `bank_parser_scripts` writes (atomic ON CONFLICT DO NOTHING). The status column is the source of truth: a retry of a `phase1_complete` statement is a no-op.
+- Sent by D01 confirm route after S3 PUT verified.
+- Inngest deduplication is by event id; D02 additionally guards via status check.
 
 ### Publishes
 
-**`statement.interpret.queue` — `statement.interpret`**
+**`muneem/statement.extracted`**
 
 ```ts
 {
@@ -192,141 +185,73 @@ If a future feature needs D02's Markdown KV exposed via HTTP, the route will liv
 }
 ```
 
-- jobId: `interpret-{statementId}`
-- attempts: 3
-- backoff: exponential, 5s base
-- Enqueued only when D02 transitions to `phase1_complete` (i.e., `transactions_found > 0`).
-- **Not enqueued** when D02 transitions to `empty` or `failed`. `empty` is terminal — see §10 and PRD §15.
+- Sent only when D02 transitions to `phase1_complete` (i.e., `transactions_found > 0`).
+- **Not sent** when D02 transitions to `empty` or `failed`.
 
 ---
 
 ## 7. Correctness Rules
 
-D02 has no business-classification logic. The rules below govern data integrity, tenancy, and the extraction-to-KV transformation.
-
-1. **Tenant isolation.** Every `bank_parser_scripts` lookup, insert, and deactivation must include `firm_id` as the first filter. A script generated for `firmA` must never be returned for `firmB`. This is the regression guard for §5.12 of the original design doc.
-2. **Sandbox isolation.** All LLM-generated Python scripts execute inside `docker/python-sandbox` only. Never `child_process.spawn` Python in the worker. Never `eval`. The sandbox runs with `env={}`, non-root UID 1500, read-only rootfs, tmpfs `/work`, no outbound network. The sandbox is the security boundary.
-3. **Balance must reconcile.** Two checks run in sequence and must both pass:
-   - **Endpoint check:** `opening_balance + Σcredits − Σdebits = closing_balance` within 1 paise tolerance.
-   - **Running-balance check:** for each row `i`, `balance[i] = balance[i−1] ± amount[i]` within 1 paise.
-     On first failure with a cached script: deactivate the script, regenerate via Opus, rerun in sandbox, re-validate. On second failure: terminal, mark `failed`.
-4. **Money is BIGINT.** All amount fields in the Markdown KV are integer paise/cents. The conversion from extracted major units (LLM/script returns "4500.00") to minor units (`4500_00`) is `Math.round(major * 100)`, applied at rendering time. Never truncate.
+1. **Tenant isolation.** Every DB read and write includes `client_org_id` or `firm_id`. No cross-tenant data flow.
+2. **Sandbox isolation.** The only Python script executed by the sandbox (`extract-pages.py`) is baked into the sandbox image. No LLM-generated code is executed — the arbitrary-code `/extract` endpoint was removed. The sandbox runs non-root, drops the PDF immediately after each parse (stateless), caps bodies at 10 MB, kills the subprocess after 30s, and requires a `Bearer <PARSER_SECRET>` header on every request except `/healthz`.
+3. **Balance must reconcile.** `opening_balance + Σcredits − Σdebits = closing_balance` within 1 paise tolerance. On failure: statement is marked `failed`. There is no regen cycle (old script-caching concept) — balance failure is terminal.
+4. **Money is BIGINT.** All amount fields in the Markdown KV are integer paise/cents. Conversion from major units (LLM returns "4500.00") to minor units (`450000`) is `Math.round(major * 100)`, applied at rendering time.
 5. **One side per row.** Exactly one of `debit_minor` / `credit_minor` is non-zero per transaction. If extraction returns both non-null, D02 throws `KvIntegrityError`.
-6. **Description is verbatim.** Multi-line continuations (rows with no date and no amount) are joined to the prior transaction's description with a single space. Otherwise the bank's narration text is preserved character-for-character.
-7. **Currency consistency.** Extracted currency must match the `bank_statements.currency` set at upload. Mismatch is a hard fail (`CurrencyMismatchError`).
-8. **Frontmatter integrity.** `transaction_count` in the frontmatter must equal the count of `## Transaction N` blocks. If they don't match at render time, `KvIntegrityError`.
-9. **Sandbox script cannot be re-used cross-firm.** `lookupScript(firmId, bankIdentifier)` is the only entry point. Scripts are stored per `(firm_id, bank_identifier)` even though the script content may be identical across firms — this is by design (§5.12 of the design doc) and may be revisited if a global cache is introduced (see §12).
-10. **No side-effect writes outside the sole-writer table list.** D02 must not write to `bank_transactions`, must not enqueue `match.queue` or `ocr.queue`, must not call F05 (email-delivery) or F06 (notifications-inbox) directly. The only outbound effect on success is the `statement.interpret` enqueue.
+6. **Description is verbatim.** The bank's narration text is preserved character-for-character. Multi-line continuations are joined with a single space.
+7. **Currency consistency.** Extracted currency must match `bank_statements.currency` set at upload. Mismatch is a hard fail (`CurrencyMismatchError`).
+8. **Frontmatter integrity.** `transaction_count` in the frontmatter must equal the count of `## Transaction N` blocks at render time. Mismatch → `KvIntegrityError`.
+9. **No side-effect writes outside the owned table list.** D02 must not write to `bank_transactions`, must not send `match.*` or `ocr.*` events, must not call email/notification modules directly.
 
 ---
 
 ## 8. LLM Usage
 
-D02 makes two distinct LLM calls in two distinct paths. Both are followed by deterministic post-processing inside D02 (sandbox execution + Markdown KV rendering) — the LLMs never produce the final output directly.
+D02 makes LLM calls in two distinct paths. Both are followed by deterministic post-processing inside D02 (Markdown KV rendering, balance validation) — the LLMs never produce the final output directly.
 
-### 8.1 Claude Opus 4.6 — pdfplumber script generation (PDF path, cache miss only)
+### 8.1 GPT-4o mini — PDF per-page transaction extraction (PDF path)
 
-- **Provider / model:** Anthropic Claude Opus 4.6 (`claude-opus-4-6`).
-- **When invoked:** PDF path, after bank identification, when `lookupScript(firmId, bankIdentifier)` returns null OR a cached script's output failed balance validation.
-- **Frequency:** Rare after initial ramp. Per PRD §21: ~50–100 calls one-time across Indian banks, ~30–50 across Canadian, ~20–30 across Irish — total platform cost ~$20–$40 over the lifetime of the script cache.
-- **Inputs:** ~4,000 tokens (raw text from first 2 pages of the PDF, extracted by the trusted, baked-in `extract-text.py` script in the sandbox via `/extract-header` — no LLM-generated code is accepted on this endpoint).
-- **Output:** ~2,000 tokens — a single Python pdfplumber script. Code-fenced markdown is stripped via `extractCodeBlock`.
-- **Temperature, max_tokens, timeout:** SDK default temperature, `max_tokens: 16384`, `timeout: 120_000` ms.
-- **Rate limit (D02-owned):** Two atomic Redis counters, both keyed by UTC date and reset at midnight UTC:
-  - per-firm daily cap (default 3/day, env `SCRIPT_GEN_FIRM_DAILY_CAP`)
-  - global daily cap (default 20/day, env `SCRIPT_GEN_GLOBAL_DAILY_CAP`)
-    Both are incremented before the API call. Either cap exceeded → `RateLimitExceededError`. Counters expire after 24 hours.
-- **Retries / fallback:** No retries on the API call itself. On failure (timeout, API error, malformed response, sandbox rejection of the generated script): one BullMQ-level retry by re-throwing.
-- **Data compliance:** PDF header text contains account holder name and account number. Anthropic zero-data-retention should be enabled on the API plan (PRD §0.2). Disclose third-party AI processing in the privacy policy (legal scope).
+- **Provider / model:** OpenAI `gpt-4o-mini`.
+- **When invoked:** PDF path, once per page of the PDF. Pages are processed with controlled concurrency (up to 4 in parallel).
+- **Frequency:** Once per page per PDF statement. A 5-page statement = 5 LLM calls.
+- **Inputs:** ~1,000–3,000 tokens per page (raw whitespace-layout text extracted by the baked-in `extract-pages.py` sandbox script via `/extract-pages`).
+- **Output:** JSON object per page: `{ currency, transactions: [...] }`. Code-fenced markdown is stripped via `extractCodeBlock`. Schema-validated via Zod.
+- **Temperature, timeout:** `temperature: 0`, `timeout: 180,000` ms (across all pages).
+- **Retries / fallback:** Two attempts per statement (Inngest retries). On second failure → `PdfLlmParseError` → statement marked `failed`.
 
-**System prompt (verbatim, current):**
+**System prompt (current — `lib/statement-parser/pdf-llm-parser.ts`):**
 
-```
-You are an expert Python developer specialising in PDF data extraction.
-I am providing the raw text content of a bank statement PDF.
-Your task is to write a complete, standalone Python script using pdfplumber
-that extracts every transaction from this bank's statement format.
+The prompt instructs the model to treat whitespace-separated columns as the field separator (not commas), skip preamble and footer rows, emit one object per transaction row, merge continuation lines into the previous row's description, and return `null` for the absent side of debit/credit rather than `0`.
 
-The script must:
-1. Accept a single argument: the path to the PDF file
-2. Print a JSON object to stdout with keys: "transactions", "opening_balance", "closing_balance", "currency"
-3. Each transaction object in the "transactions" array:
-   {
-     "date": "YYYY-MM-DD",
-     "description": string,   // raw text exactly as it appears — do not modify
-     "debit": number | null,  // money out — positive number, null if not a debit row
-     "credit": number | null, // money in — positive number, null if not a credit row
-     "balance": number        // running balance after this transaction
-   }
-4. Handle multi-line transaction descriptions correctly:
-   - A row with no date and no debit/credit value is a continuation of the previous row
-   - Append its description text to the previous transaction's description
-5. Skip header rows and footer rows (totals, page numbers, bank branding)
-6. Handle page breaks correctly — the column header repeats on each page; skip it each time
-7. Use column x-coordinate ranges to assign values to columns — do NOT rely on fixed y-coordinates
-8. Sample at least 3 pages of the PDF before committing to column boundaries
-9. Print ONLY the JSON object to stdout — no logging, no progress messages, no markdown
+**Per-page output schema (Zod-validated):**
 
-The script must be fully deterministic. It must not:
-- Access the network (no sockets, no urllib/requests/http, no DNS)
-- Read the system clock or environment variables (no os.environ, no datetime.now, no time.time)
-- Read or write any file outside the PDF path provided as argv[1]
-- Import subprocess, ctypes, socket, urllib, http, requests, os (except os.path), sys (except sys.argv / sys.stdout / sys.stderr), or any package that wraps these
-- Execute shell commands
-
-Also extract from the statement header:
-   "opening_balance": number,
-   "closing_balance": number,
-   "currency": string  // ISO 4217
-
-Return the complete Python script only. No explanation. No markdown fences.
+```ts
+{
+  currency: string | null;       // ISO 4217 if inferable; null if preamble-only page
+  transactions: [
+    {
+      date: string;              // YYYY-MM-DD
+      description: string;       // narration verbatim
+      debit: number | null;      // major units; null if credit row
+      credit: number | null;     // major units; null if debit row
+      balance: number | null;    // running closing balance, major units; null if blank
+    }
+  ]
+}
 ```
 
-**User-message template:**
-
-```
-Here is the raw text from the first 2 pages of the bank statement PDF:
-
-<<<
-{rawHeaderText}
->>>
-
-Write the complete Python pdfplumber extraction script.
-```
+Pages are merged in order; duplicate rows at page boundaries are deduplicated by D02 before rendering.
 
 ### 8.2 GPT-4o mini — CSV transaction-table extraction (CSV path, every statement)
 
 - **Provider / model:** OpenAI `gpt-4o-mini`.
-- **When invoked:** CSV path, every statement. CSVs skip the sandbox entirely because there is no untrusted code to execute and the format variability lives in the preamble shape, not the row shape.
+- **When invoked:** CSV path, once per statement.
 - **Frequency:** Once per CSV statement uploaded.
-- **Inputs:** ~2,000–10,000 tokens (entire raw CSV text). A warning is logged at >200,000 chars; over the model context, the call will fail and BullMQ retries.
-- **Output:** A single JSON object with statement metadata + transaction rows. Code-fenced output is stripped via `extractCodeBlock`. Schema-validated via Zod.
-- **Temperature, timeout:** `temperature: 0`, `timeout: 120_000` ms.
-- **Retries / fallback:** Two attempts. On second failure (malformed JSON or schema mismatch): `CsvLlmParseError` → BullMQ retries the whole job. There is no rule-based fallback — the regex parser was retired because it broke on any statement with more than a few lines of preamble.
-- **Data compliance:** CSV may contain account holder PII and full transaction descriptions. Same OpenAI zero-data-retention requirement.
+- **Inputs:** ~2,000–10,000 tokens (entire raw CSV text). A warning is logged at >200,000 chars.
+- **Output:** A single JSON object with statement metadata + transaction rows. Schema-validated via Zod.
+- **Temperature, timeout:** `temperature: 0`, `timeout: 120,000` ms.
+- **Retries / fallback:** Two attempts. On second failure → `CsvLlmParseError` → Inngest retries the whole job.
 
-**Output schema (Zod-validated; D02 boundary — no `needs_invoice`, no `amount_minor`):**
-
-```ts
-{
-  currency: string;          // ISO 4217, length 3
-  opening_balance: number;   // major units
-  closing_balance: number;   // major units
-  transactions: [
-    {
-      date: string;          // YYYY-MM-DD
-      description: string;   // narration verbatim
-      debit:  number | null; // major units; null if credit row
-      credit: number | null; // major units; null if debit row
-      balance: number;       // major units, running closing balance for this row
-    }
-  ];
-}
-```
-
-> **Refactor note.** The current prompt in `lib/statement-parser/csv-llm-parser.ts` includes `amount_minor` and `needs_invoice` fields in the output schema. Both are removed during the D02 implementation refactor: `amount_minor` becomes a deterministic post-processing step inside D02 (`Math.round(major * 100)` with sign derived from which of debit/credit is non-null), and `needs_invoice` moves entirely into D03's prompt over the Markdown KV.
-
-**System prompt (target — post-refactor):**
+**System prompt target (post-refactor — D02 boundary: no `amount_minor`, no `needs_invoice`):**
 
 ```
 You are a bookkeeping assistant. The user will paste the entire raw text of a
@@ -336,85 +261,74 @@ before the actual transaction table. Your job is to find the transaction table,
 extract every transaction row, and return a single JSON object — no prose, no
 markdown fences.
 
-Output shape (return exactly this object):
+Output shape:
 {
-  "currency": "INR",                  // ISO 4217 inferred from the statement
-  "opening_balance": number,          // major units (e.g. rupees, NOT paise)
-  "closing_balance": number,          // major units
+  "currency": "INR",
+  "opening_balance": number,
+  "closing_balance": number,
   "transactions": [
     {
-      "date": "YYYY-MM-DD",           // ISO 8601, normalised
-      "description": string,          // the narration column, preserved exactly
-      "debit": number | null,         // major units; null if this row is a credit
-      "credit": number | null,        // major units; null if this row is a debit
-      "balance": number               // running closing balance for this row, major units
+      "date": "YYYY-MM-DD",
+      "description": string,
+      "debit": number | null,
+      "credit": number | null,
+      "balance": number
     }
   ]
 }
 
 Rules:
 - Skip header preamble rows of any length until you find the transaction table.
-- One output object per transaction row. Do not merge rows or insert opening/closing balance rows as transactions.
+- One output object per transaction row. Do not merge rows.
 - Exactly one of debit / credit is non-null per row. The other must be null. Never put 0 — use null.
-- Preserve the original narration / description text exactly. Do not summarise, translate, or strip prefixes like UPI-, NEFT-, IMPS-.
-- opening_balance: the balance before any transaction. If the statement prints it explicitly ("Opening Balance", "B/F", "Brought Forward"), use that. Otherwise derive it from the first transaction's balance minus its movement.
-- closing_balance: the balance after the last transaction (the last row's balance value).
+- Preserve the original narration / description text exactly.
+- opening_balance: the balance before any transaction.
+- closing_balance: the balance after the last transaction.
 ```
 
 ### 8.3 What D02 does not use an LLM for
 
-- Bank identification (regex scoring in `lib/statement-parser/identify-bank.ts`).
+- Bank identification — `bank_identifier` is always `null` (deferred; see §12).
 - Markdown KV rendering (deterministic).
 - Balance validation (deterministic).
 - `extraction_confidence` (deterministic heuristic table — see §2.2).
+- Major-to-minor unit conversion (`Math.round(major * 100)`) — deterministic.
 
 ---
 
 ## 9. Economics
 
-Reference: PRD v6 §21.
-
-| Component                                | Per unit   | Frequency                 | Notes                                                                        |
-| ---------------------------------------- | ---------- | ------------------------- | ---------------------------------------------------------------------------- |
-| Opus 4.6 script generation (cache miss)  | ~$0.21     | per new (firm, bank) pair | 4,000 in @ $15/M + 2,000 out @ $75/M; one-time cost per bank format per firm |
-| pdfplumber sandbox execution (cache hit) | ~$0.001    | per PDF statement         | ECS Fargate compute, ~10s                                                    |
-| GPT-4o mini CSV extraction               | ~$0.001    | per CSV statement         | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M                                   |
-| S3 read of cached script                 | negligible | per cache hit             |                                                                              |
-| Markdown KV write (Postgres)             | negligible | per statement             | one TEXT column update                                                       |
-
-**Mature-stage cost per statement (cache hit):** ~$0.001 of D02's $0.005 total per-statement (the rest — GPT-4o mini normalisation $0.001 + S3 storage $0.003 — belongs to D03 / D01).
+| Component                    | Per unit   | Frequency         | Notes                                                                 |
+| ---------------------------- | ---------- | ----------------- | --------------------------------------------------------------------- |
+| GPT-4o mini PDF extraction   | ~$0.002    | per PDF statement | ~3,000–8,000 in @ $0.15/M + ~500–2,000 out @ $0.60/M across all pages |
+| GPT-4o mini CSV extraction   | ~$0.001    | per CSV statement | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M                            |
+| pdfplumber sandbox execution | ~$0.001    | per PDF statement | ECS Fargate compute, ~5–15s                                           |
+| S3 download                  | negligible | per statement     |                                                                       |
+| Markdown KV write (Postgres) | negligible | per statement     | one TEXT column update                                                |
 
 **Watch metrics:**
 
-- `cache_miss_rate` — rolling 7-day. PRD baseline: ≤30% during ramp, ≤2% mature. Above 5% in mature stage → investigate (new banks not pattern-matched, scripts being deactivated too aggressively).
-- `script_gen_quota_exhaustion_rate` — non-zero in production means caps need raising (Track 1 caps were 3/firm/day, 20/global/day).
-- `regen_cycle_rate` — fraction of cache-hit jobs that triggered regeneration. Rising rate signals format drift at a bank.
-
-Bounds on the firm-daily cap and global-daily cap are env-configurable so production can tune without a deploy.
+- `balance_check_fail_rate` — non-zero in production means extraction quality issues (likely page-boundary merging or LLM returning `null` balances). Rising rate → investigate prompt or per-page merging logic.
+- `empty_statement_rate` — statements that extracted 0 transactions. Normal for some edge cases; >5% sustained → investigate preamble detection.
 
 ---
 
 ## 10. Failure Modes
 
-| Failure                           | Trigger                                                                                                                                      | Impact                                                                                                                | Severity | Recovery                                                                                                                   |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `S3DownloadError` (NoSuchKey)     | Object missing or deleted before D02 download                                                                                                | Statement marked `failed` immediately, no retry                                                                       | high     | Manual re-upload required                                                                                                  |
-| `S3DownloadError` (network)       | Transient S3 error                                                                                                                           | BullMQ retries with backoff                                                                                           | medium   | Self-resolves on retry                                                                                                     |
-| `NotAPdfNorCsvError`              | Magic-byte check fails (not `%PDF-`, no CSV signature)                                                                                       | Statement marked `failed`                                                                                             | medium   | User re-uploads correct file                                                                                               |
-| `BankIdentificationFailure`       | No regex pattern matches the header text                                                                                                     | **Soft** — proceeds without `bank_identifier`; script generated but not cached; `extraction_confidence` -0.10 penalty | low      | Adds the header-text hash to `statement_parse_log` for offline pattern review                                              |
-| `SandboxUnavailableError`         | `PYTHON_SANDBOX_URL` unreachable                                                                                                             | All PDF statements fail until sandbox returns                                                                         | critical | Sandbox `/healthz` should be probed at worker startup; container restart policy + alerting (F08)                           |
-| `SandboxTimeoutError`             | LLM-generated script ran >30s                                                                                                                | One statement fails; sandbox kills subprocess                                                                         | medium   | If cached script was at fault, regen cycle replaces it; else BullMQ retry                                                  |
-| `SandboxScriptError`              | Generated script throws or returns non-JSON                                                                                                  | Statement fails this attempt                                                                                          | medium   | If cached, triggers regen cycle; else terminal after BullMQ retries                                                        |
-| `ScriptGenerationFailure`         | Anthropic API timeout, error, or empty response                                                                                              | Statement fails this attempt                                                                                          | high     | BullMQ retries; rate-limit counter was already incremented (sunk cost) — see §12                                           |
-| `RateLimitExceededError`          | Per-firm 3/day or global 20/day cap hit on a cache miss                                                                                      | New-bank statements blocked until UTC midnight                                                                        | medium   | Tune `SCRIPT_GEN_FIRM_DAILY_CAP` / `SCRIPT_GEN_GLOBAL_DAILY_CAP`                                                           |
-| `BalanceValidationError` (first)  | Endpoint or running-balance check fails on cache hit                                                                                         | Triggers regeneration cycle (deactivate + regen + rerun)                                                              | high     | Self-recovers on regen, else escalates                                                                                     |
-| `BalanceValidationError` (second) | Regen path also fails balance                                                                                                                | Terminal — statement marked `failed`                                                                                  | high     | Engineering reviews logged header text; manual override (`skip_balance_check`) is **not** in scope for D02 alpha — see §12 |
-| `CsvLlmParseError`                | GPT-4o mini returns malformed JSON or schema mismatch on both attempts                                                                       | Statement fails this attempt                                                                                          | medium   | BullMQ retries the whole job                                                                                               |
-| `CurrencyMismatchError`           | Extracted currency ≠ `bank_statements.currency` from upload                                                                                  | Statement marked `failed`                                                                                             | medium   | Indicates upload-time metadata bug or wrong-statement upload; CA notified                                                  |
-| `KvIntegrityError`                | Internal: `transaction_count` ≠ count of blocks, or both debit and credit non-zero on a row, or a row missing required fields at render time | Statement marked `failed`                                                                                             | high     | Indicates a D02 code bug — Sentry alerts on this; should never occur in production                                         |
-| `ScriptCacheScopeViolation`       | Theoretical: `lookupScript` returns a script for the wrong `firm_id`                                                                         | **Critical** — cross-tenant data flow                                                                                 | critical | Hardcoded `firm_id` filter in every query; unit-test asserts isolation; if it ever fires, halt the worker                  |
+| Failure                       | Trigger                                                                           | Impact                                          | Severity | Recovery                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------- | -------- | ------------------------------------------------------------ |
+| `S3DownloadError` (NoSuchKey) | Object missing or deleted before D02 download                                     | Statement marked `failed` immediately, no retry | high     | Manual re-upload required                                    |
+| `S3DownloadError` (network)   | Transient S3 error                                                                | Inngest retries with backoff                    | medium   | Self-resolves on retry                                       |
+| `NotAPdfNorCsvError`          | Magic-byte check fails (not `%PDF-`, no CSV signature)                            | Statement marked `failed`                       | medium   | User re-uploads correct file                                 |
+| `SandboxUnavailableError`     | `PYTHON_SANDBOX_URL` unreachable                                                  | All PDF statements fail until sandbox returns   | critical | Container restart policy + alerting (F08)                    |
+| `SandboxTimeoutError`         | `extract-pages.py` ran >30s (sandbox kill) or >60s (client abort)                 | One statement fails; sandbox kills subprocess   | medium   | Inngest retry                                                |
+| `PdfLlmParseError`            | GPT-4o mini returns malformed JSON or schema mismatch on both attempts            | Statement fails this attempt                    | medium   | Inngest retries the whole job                                |
+| `CsvLlmParseError`            | GPT-4o mini returns malformed JSON or schema mismatch on both attempts            | Statement fails this attempt                    | medium   | Inngest retries the whole job                                |
+| `BalanceValidationError`      | Endpoint check fails after extraction                                             | Terminal — statement marked `failed`            | high     | CA re-uploads; engineering reviews parse log for pattern     |
+| `CurrencyMismatchError`       | Extracted currency ≠ `bank_statements.currency` from upload                       | Statement marked `failed`                       | medium   | Indicates upload-time metadata bug or wrong-statement upload |
+| `KvIntegrityError`            | `transaction_count` ≠ count of blocks, or both debit and credit non-zero on a row | Statement marked `failed`                       | high     | Indicates a D02 code bug — Sentry alerts on this             |
 
-**Statement marked `empty`** is not a failure. It is a terminal success state: D02 extracted zero transactions (genuinely blank statement, or a structure D02 couldn't find rows in). The CA is notified to investigate the file. D03 is **not** enqueued for empty statements.
+**Statement marked `empty`** is not a failure. It is a terminal success state: D02 extracted zero transactions. The CA is notified to investigate the file. D03 is **not** triggered for empty statements.
 
 ---
 
@@ -423,58 +337,57 @@ Bounds on the firm-daily cap and global-daily cap are env-configurable so produc
 **Depends on (modules):**
 
 - **F02 — tenant-isolation** for `firm_id` resolution from `client_org_id`.
-- **D01 — bank-statement-upload** as the producer that emits `muneem/statement.uploaded` after the confirm route accepts the upload.
+- **D01 — bank-statement-upload** as the producer that sends `muneem/statement.uploaded` after the confirm route accepts the upload.
 
 **Depended on by (modules):**
 
-- **D03 — statement-interpretation** — consumes the Markdown KV from `bank_statements.phase1_markdown` and the `statement.interpret` queue job.
+- **D03 — statement-interpretation** — consumes the Markdown KV from `bank_statements.phase1_markdown` and the `muneem/statement.extracted` event.
 
 **External services:**
 
 - AWS S3 / MinIO — object storage for raw uploads.
-- Redis — BullMQ queue + rate-limit counters.
-- Python sandbox (Docker) — `PYTHON_SANDBOX_URL`; endpoints `GET /healthz`, `POST /extract-header`, `POST /extract`. Owned at infra layer; D02 is the only consumer.
-- Anthropic API — Claude Opus 4.6 for script generation.
-- OpenAI API — GPT-4o mini for CSV extraction.
+- Python sandbox (Docker) — `PYTHON_SANDBOX_URL`; endpoints `GET /healthz` and `POST /extract-pages` only. Hosted on **Google Cloud Run** (scale-to-zero); local dev runs it via `docker-compose`. Every request except `/healthz` requires `Authorization: Bearer <PARSER_SECRET>` (shared secret in both the sandbox env and Vercel/Next.js env). Owned at infra layer; D02 is the only consumer.
+- OpenAI API — GPT-4o mini for both PDF per-page extraction and CSV extraction.
 - PostgreSQL — Drizzle ORM client.
+- Inngest — event bus and job retry infrastructure.
 
-**Files D02 owns (post-refactor target):**
+**Files D02 owns:**
 
-- `workers/statement.worker.ts` — D02 worker (today this file is hybrid; the implementation task strips D03 work out)
-- `lib/statement-parser/identify-bank.ts`
-- `lib/statement-parser/script-cache.ts`
-- `lib/statement-parser/sandbox-client.ts`
-- `lib/statement-parser/run-pdfplumber.ts`
-- `lib/statement-parser/csv-llm-parser.ts` (refactored to drop `amount_minor` / `needs_invoice` from schema)
-- `lib/statement-parser/validate-balance.ts`
-- `lib/statement-parser/rate-limit.ts`
-- `lib/statement-parser/extract-code-block.ts`
-- `lib/statement-parser/types.ts` (shared types — to be re-scoped to D02-only fields)
-- `lib/statement-parser/render-markdown-kv.ts` — **new** file; deterministic renderer
-- `docker/python-sandbox/**` — sandbox image (cross-cutting; D02 is the sole consumer in V1)
+- `src/lib/inngest/functions/statement-extract.ts` — D02 Inngest function
+- `src/lib/statement-parser/sandbox-client.ts`
+- `src/lib/statement-parser/pdf-llm-parser.ts`
+- `src/lib/statement-parser/csv-llm-parser.ts`
+- `src/lib/statement-parser/validate-balance.ts`
+- `src/lib/statement-parser/extract-code-block.ts`
+- `src/lib/statement-parser/render-markdown-kv.ts` — deterministic Markdown KV renderer
+- `src/lib/statement-parser/types.ts` — shared extraction types
+- `docker/python-sandbox/**` — sandbox image; `extract-pages.py` is the sole baked-in extraction script for PDFs. Hosted on Cloud Run; Bearer-secret gated. (`extract-text.py` and the `/extract` arbitrary-code endpoint were removed.)
 
-**Files D02 hands off to D03 in the implementation refactor:**
+**Files removed in the architecture pivot (no longer exist):**
 
-- `lib/statement-parser/normalise.ts` — moves to D03's lib path, prompt rewritten to consume Markdown KV + client knowledge
-- The transaction-insert section of `workers/statement.worker.ts` — moves to a new `workers/interpret.worker.ts` (D03)
+- `src/lib/statement-parser/identify-bank.ts` — bank identification (deferred; see §12)
+- `src/lib/statement-parser/script-cache.ts` — pdfplumber script cache
+- `src/lib/statement-parser/run-pdfplumber.ts` — dynamic script execution
+- `src/lib/statement-parser/rate-limit.ts` — Redis-based script-generation rate limiting
 
 ---
 
 ## 12. Open Questions
 
-1. **`extraction_confidence` calibration.** The values in §2.2 are starting heuristics. Once we have ≥30 alpha statements, replay them through D02 and compute the empirical correlation between confidence and downstream D03 disagreement-with-CA rate. Adjust the table.
-2. **Manual override for legitimate balance mismatches.** Some statements have legitimate reconciling items (adjustments, charges not shown as rows) that will never satisfy `opening + credits − debits = closing`. The PRD-archived design doc proposed a `skip_balance_check` flag exposed only in the CA admin UI. **Out of scope for D02 alpha** — alpha will mark such statements `failed` and CA support will manually re-upload with adjustments. Re-evaluate before Track 2.
-3. **Global script cache.** Scripts are per-firm today (security default). A read-only global script cache would cut Opus calls dramatically once 10+ firms are onboarded but introduces a cross-firm data-flow surface. Decide before Track 2 launch.
-4. **Per-file size cap.** D01 confirm enforces a 25 MB cap via S3 HEAD; the sandbox additionally rejects >12 MB. The gap is intentional but flagged for review.
-5. **Rate-limit cap accounting on Anthropic outage.** If the API call fails, we still incremented the counter. Ideally the failed call decrements on terminal error. Low-impact in alpha; revisit.
-6. **Sandbox health-check at worker startup.** `GET /healthz` should fail-fast the worker process if sandbox is unreachable, rather than burning 35s timeouts on every job. Owner: this module on the worker side; sandbox image owner on the infra side.
-7. **CSV magic-byte detection.** Currently distinguished from PDF by absence of `%PDF-`. Adding a positive CSV check (UTF-8 / common delimiter detection) would catch garbage uploads earlier. Low priority.
-8. **Markdown KV size.** A 200-row statement renders to ~25 KB of Markdown. PostgreSQL TEXT handles this trivially; D03's LLM prompt will fit. If statements exceed ~1,000 rows, may need to chunk for D03's context window. Defer until observed.
+1. **Bank identification (deferred).** `bank_identifier` is always `null` in the current implementation. A lightweight reimplementation — regex pass over the first page's extracted text, no LLM — would re-enable: (a) per-bank prompt hints injected into the PDF-LLM prompt for known formats, (b) observability dashboards segmented by bank, (c) D03 context injection ("this is an HDFC statement"), and (d) a future lightweight prompt-template cache keyed on `(firm_id, bank_identifier)`. Low priority for alpha; re-evaluate when extraction accuracy data is available.
+2. **`bank_parser_scripts` table.** Retained in DB schema but never written to. Should be dropped in a future migration once bank identification / caching strategy is decided. The `parser_script_id` column on `statement_parse_log` is always `null`.
+3. **`extraction_confidence` calibration.** The values in §2.2 are starting heuristics. Once we have ≥30 alpha statements, replay them through D02 and compute the empirical correlation between confidence and downstream D03 disagreement-with-CA rate. Adjust the table.
+4. **Page-boundary deduplication.** Some banks repeat the last row of a page as the first row of the next page (running total row). Current deduplication logic uses date+amount+description hash; needs alpha data to confirm it handles all edge cases.
+5. **Manual override for legitimate balance mismatches.** Some statements have reconciling items (adjustments, charges not shown as rows) that will never satisfy `opening + credits − debits = closing`. A `skip_balance_check` flag exposed only in the CA admin UI is out of scope for alpha — such statements are marked `failed` and CA support handles manually. Re-evaluate before Track 2.
+6. **Markdown KV size.** A 200-row statement renders to ~25 KB of Markdown. PostgreSQL TEXT handles this trivially; D03's LLM prompt will fit. If statements exceed ~1,000 rows, may need to chunk for D03's context window. Defer until observed.
+7. **`runInSandbox` dead code — RESOLVED (2026-06-02).** `runInSandbox` (the old LLM-generated `/extract` path) and `extractHeaderText` (`/extract-header`) were removed from `sandbox-client.ts`, along with the corresponding server endpoints and `extract-text.py`. `sandbox-client.ts` now exports only `extractPdfPages`.
 
 ---
 
 ## 13. Change Log
 
-| Date       | Change                                                                                                                                                                                                                                                                                                                                           | By            |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
-| 2026-05-02 | Initial spec; status `SPECCED`. Lifts and rescopes content from `docs/archive/bank-statement-parser-design.md` (which mixed D02 + D03 concerns). Codifies the Markdown KV format, the `extraction_confidence` heuristic, the queue split (`statement.queue` consumed; `statement.interpret.queue` published), and the schema ownership boundary. | Bani / Claude |
+| Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | By            |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 2026-05-02 | Initial spec; status `SPECCED`. Lifts and rescopes content from `docs/archive/bank-statement-parser-design.md`. Codified pdfplumber script-generation architecture (Opus 4.6 + per-firm script cache + bank identification).                                                                                                                                                                                                                                           | Bani / Claude |
+| 2026-06-02 | Rewrote to match actual implementation. Removed pdfplumber script-generation architecture (Opus, `bank_parser_scripts`, `identify-bank.ts`, `script-cache.ts`, `run-pdfplumber.ts`, `rate-limit.ts`). Updated to per-page GPT-4o mini PDF extraction + Inngest event bus. `bank_identifier` noted as deferred. Status → `IMPLEMENTED`.                                                                                                                                 | Bani / Claude |
+| 2026-06-02 | Deployed the Python sandbox to **Google Cloud Run** (was Vercel-only → PDF parsing failed in prod). Hardened the service: removed the `/extract` (arbitrary-code) and `/extract-header` endpoints + `extract-text.py`; `sandbox-client.ts` exports only `extractPdfPages`. Added `Bearer <PARSER_SECRET>` auth, 10 MB body cap, 30s subprocess timeout, `$PORT`, stateless logging. Fixed local `docker-compose` port (8080) and removed dead `SCRIPT_GEN_*` env vars. | Bani / Claude |

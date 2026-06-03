@@ -1,9 +1,13 @@
 """Python sandbox HTTP service.
 
-Executes pdfplumber scripts in isolation from the Node worker process:
+Executes the baked-in extract-pages.py against an uploaded bank-statement PDF,
+isolated from the Node worker process:
 - Non-root UID 1500, read-only rootfs, tmpfs /work, dropped capabilities.
-- env={} passed to every subprocess so no secrets leak into executed code.
-- No outbound network (compose `internal: true` on sandbox-net).
+- env={} passed to the subprocess so no secrets leak into executed code.
+- No LLM-generated code is ever accepted — only the baked-in script runs.
+
+Hosted on Google Cloud Run (publicly reachable), so every request must carry
+`Authorization: Bearer <PARSER_SECRET>`. /healthz is the only exempt route.
 """
 import base64
 import binascii
@@ -12,18 +16,37 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024  # 15 MB
+# HTTP-layer reject: bodies (base64 PDF) larger than 10 MB never reach a handler.
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 PYTHON_BIN = sys.executable
 WORK_ROOT = "/work"
-HEADER_SCRIPT = "/app/extract-text.py"
-MAX_PDF_BYTES = 12 * 1024 * 1024
-DEFAULT_TIMEOUT_S = 30
+PAGES_SCRIPT = "/app/extract-pages.py"
+MAX_PDF_BYTES = 10 * 1024 * 1024
+PAGES_TIMEOUT_S = 30
+
+# Required shared secret. Read once at startup; a missing value is fatal so the
+# service can never come up unauthenticated.
+PARSER_SECRET = os.environ.get("PARSER_SECRET")
+if not PARSER_SECRET:
+    sys.exit("PARSER_SECRET is not set — refusing to start unauthenticated")
+
+
+def _log(job_id: str, status: str, duration_ms: int, **extra) -> None:
+    """Structured one-line log. Never includes PDF bytes or extracted text."""
+    print(
+        json.dumps(
+            {"jobId": job_id, "status": status, "durationMs": duration_ms, **extra}
+        ),
+        flush=True,
+    )
 
 
 def _decode_pdf(pdf_b64: str) -> bytes:
@@ -56,82 +79,60 @@ def _run(cmd: list[str], cwd: str, timeout: int) -> dict:
     }
 
 
+@app.before_request
+def _require_bearer():
+    """Gate every route except the health check behind the shared secret."""
+    if request.path == "/healthz":
+        return None
+    header = request.headers.get("Authorization", "")
+    expected = f"Bearer {PARSER_SECRET}"
+    if header != expected:
+        return jsonify({"error": "unauthorized"}), 401
+    return None
+
+
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True})
 
 
-@app.post("/extract")
-def extract():
-    """Run an LLM-generated pdfplumber script against a PDF."""
+@app.post("/extract-pages")
+def extract_pages():
+    """Run the baked-in extract-pages.py — no LLM code accepted."""
+    started = time.monotonic()
     body = request.get_json(silent=True) or {}
-    script_code = body.get("scriptCode")
-    pdf_b64 = body.get("pdfBase64")
-    if not isinstance(script_code, str) or not script_code.strip():
-        return jsonify({"error": "scriptCode must be a non-empty string"}), 400
-    if len(script_code) > 200_000:
-        return jsonify({"error": "scriptCode too large"}), 400
-
-    try:
-        pdf_bytes = _decode_pdf(pdf_b64)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    workdir = tempfile.mkdtemp(prefix="extract-", dir=WORK_ROOT)
-    try:
-        script_path = Path(workdir) / "extract.py"
-        pdf_path = Path(workdir) / "input.pdf"
-        script_path.write_text(script_code, encoding="utf-8")
-        pdf_path.write_bytes(pdf_bytes)
-
-        try:
-            result = _run(
-                [PYTHON_BIN, str(script_path), str(pdf_path)],
-                cwd=workdir,
-                timeout=DEFAULT_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            return jsonify({"error": "timeout", "timeoutSeconds": DEFAULT_TIMEOUT_S}), 504
-
-        return jsonify(result)
-    finally:
-        for p in Path(workdir).glob("*"):
-            try:
-                p.unlink()
-            except OSError:
-                pass
-        try:
-            os.rmdir(workdir)
-        except OSError:
-            pass
-
-
-@app.post("/extract-header")
-def extract_header():
-    """Run the baked-in extract-text.py — no LLM code accepted."""
-    body = request.get_json(silent=True) or {}
+    job_id = str(body.get("jobId") or uuid.uuid4().hex[:12])
     pdf_b64 = body.get("pdfBase64")
     try:
         pdf_bytes = _decode_pdf(pdf_b64)
     except ValueError as exc:
+        _log(job_id, "rejected", int((time.monotonic() - started) * 1000))
         return jsonify({"error": str(exc)}), 400
 
-    workdir = tempfile.mkdtemp(prefix="header-", dir=WORK_ROOT)
+    workdir = tempfile.mkdtemp(prefix="pages-", dir=WORK_ROOT)
+    pdf_path = Path(workdir) / "input.pdf"
     try:
-        pdf_path = Path(workdir) / "input.pdf"
         pdf_path.write_bytes(pdf_bytes)
         try:
             result = _run(
-                [PYTHON_BIN, HEADER_SCRIPT, str(pdf_path)],
+                [PYTHON_BIN, PAGES_SCRIPT, str(pdf_path)],
                 cwd=workdir,
-                timeout=15,
+                timeout=PAGES_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            return jsonify({"error": "timeout", "timeoutSeconds": 15}), 504
+            _log(job_id, "timeout", int((time.monotonic() - started) * 1000))
+            return jsonify({"error": "timeout", "timeoutSeconds": PAGES_TIMEOUT_S}), 504
+        _log(
+            job_id,
+            "ok" if result["exitCode"] == 0 else "error",
+            int((time.monotonic() - started) * 1000),
+            exitCode=result["exitCode"],
+        )
         return jsonify(result)
     finally:
+        # Stateless: the PDF never outlives the parse.
         try:
-            (Path(workdir) / "input.pdf").unlink()
+            pdf_path.unlink()
         except OSError:
             pass
         try:
@@ -142,9 +143,9 @@ def extract_header():
 
 @app.errorhandler(413)
 def too_large(_err):
-    return jsonify({"error": "request body exceeds 15 MB"}), 413
+    return jsonify({"error": "request body exceeds 10 MB"}), 413
 
 
 if __name__ == "__main__":
     Path(WORK_ROOT).mkdir(parents=True, exist_ok=True)
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

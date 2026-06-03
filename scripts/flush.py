@@ -13,10 +13,22 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Redirect stdout/stderr to a log file so background failures aren't silent.
+_LOG_PATH = Path(__file__).parent.parent / "hooks" / "flush.log"
+try:
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _log_fp = open(_LOG_PATH, "a", encoding="utf-8", buffering=1)
+    sys.stdout = _log_fp
+    sys.stderr = _log_fp
+    print(f"\n--- flush start {datetime.now().isoformat()} pid={os.getpid()} ---")
+except Exception:
+    pass
 
 from config import (
     COMPILE_AFTER_HOUR,
@@ -95,15 +107,33 @@ TRANSCRIPT:
 """
 
     result_parts: list[str] = []
-    async for message in query(
+    from claude_code_sdk import AssistantMessage, TextBlock
+    try:
+        from claude_code_sdk._errors import MessageParseError  # type: ignore
+    except Exception:
+        try:
+            from claude_code_sdk import MessageParseError  # type: ignore
+        except Exception:
+            MessageParseError = ()  # type: ignore
+
+    agen = query(
         prompt=prompt,
         options=ClaudeCodeOptions(
             cwd=str(ROOT_DIR),
             allowed_tools=[],
             max_turns=2,
         ),
-    ):
-        from claude_code_sdk import AssistantMessage, TextBlock
+    ).__aiter__()
+    while True:
+        try:
+            message = await agen.__anext__()
+        except StopAsyncIteration:
+            break
+        except MessageParseError as e:
+            # SDK doesn't recognize a newer CLI message type (e.g. rate_limit_event).
+            # Skip the unknown frame and keep consuming.
+            print(f"flush: skipping unknown SDK message: {e}")
+            continue
         if isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, TextBlock):
@@ -177,4 +207,9 @@ if __name__ == "__main__":
     if not transcript_path.exists():
         sys.exit(0)
 
-    asyncio.run(run_flush(transcript_path, session_id))
+    try:
+        asyncio.run(run_flush(transcript_path, session_id))
+    except Exception:
+        print("flush: fatal error")
+        traceback.print_exc()
+        sys.exit(1)
