@@ -1,15 +1,15 @@
-import OpenAI from 'openai';
-import { z } from 'zod';
-import { extractCodeBlock } from './extract-code-block';
+import OpenAI from "openai";
+import { z } from "zod";
+import { extractCodeBlock } from "./extract-code-block";
 
-const MODEL = 'gpt-4o-mini';
+const MODEL = "gpt-4o-mini";
 const LLM_TIMEOUT_MS = 120_000;
 const LARGE_CSV_WARN_THRESHOLD = 200_000;
 
 export class CsvLlmParseError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'CsvLlmParseError';
+    this.name = "CsvLlmParseError";
   }
 }
 
@@ -45,14 +45,14 @@ Rules:
 - closing_balance: the balance after the last transaction (the last row's balance value).`;
 
 const csvLlmRowSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
   description: z.string(),
   debit: z.number().nullable(),
   credit: z.number().nullable(),
   balance: z.number(),
 });
 
-const csvLlmResultSchema = z.object({
+export const csvLlmResultSchema = z.object({
   currency: z.string().length(3),
   opening_balance: z.number(),
   closing_balance: z.number(),
@@ -92,24 +92,27 @@ export async function parseCsvWithLlm(
     } catch (err) {
       lastErr = err;
       if (attempt === 0) {
-        console.warn('csv-llm-parser: attempt 1 failed, retrying:', err);
+        console.warn("csv-llm-parser: attempt 1 failed, retrying:", err);
       }
     }
   }
   throw new CsvLlmParseError(
-    `LLM CSV extraction failed after 2 attempts: ${(lastErr as Error)?.message ?? 'unknown error'}`,
+    `LLM CSV extraction failed after 2 attempts: ${(lastErr as Error)?.message ?? "unknown error"}`,
   );
 }
 
-async function callGpt4oMini(csvText: string, signal?: AbortSignal): Promise<CsvLlmResult> {
+async function callGpt4oMini(
+  csvText: string,
+  signal?: AbortSignal,
+): Promise<CsvLlmResult> {
   const res = await getOpenAI().chat.completions.create(
     {
       model: MODEL,
       temperature: 0,
       messages: [
-        { role: 'system', content: CSV_LLM_PROMPT },
+        { role: "system", content: CSV_LLM_PROMPT },
         {
-          role: 'user',
+          role: "user",
           content: `Extract all transactions from this bank statement CSV. Return the JSON object only.\n\n${csvText}`,
         },
       ],
@@ -118,7 +121,7 @@ async function callGpt4oMini(csvText: string, signal?: AbortSignal): Promise<Csv
   );
 
   const raw = res.choices[0]?.message?.content?.trim();
-  if (!raw) throw new Error('GPT-4o mini returned empty response');
+  if (!raw) throw new Error("GPT-4o mini returned empty response");
 
   const jsonStr = extractCodeBlock(raw);
   const parsed = JSON.parse(jsonStr);

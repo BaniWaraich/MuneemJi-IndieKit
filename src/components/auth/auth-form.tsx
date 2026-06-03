@@ -34,30 +34,32 @@ export function AuthForm({ className, callbackUrl, ...props }: AuthFormProps) {
     resolver: zodResolver(loginSchema),
   });
 
+  const handleImpersonation = React.useCallback(
+    async (token: string) => {
+      setIsLoading(true);
+      try {
+        const result = await signIn("impersonation", {
+          signedToken: token,
+          redirect: false,
+          callbackUrl:
+            callbackUrl || searchParams?.get("callbackUrl") || "/dashboard",
+        });
 
-  const handleImpersonation = React.useCallback(async (token: string) => {
-    setIsLoading(true);
-    try {
-      const result = await signIn("impersonation", {
-        signedToken: token,
-        redirect: false,
-        callbackUrl: callbackUrl || searchParams?.get("callbackUrl") || "/app",
-      });
-
-      if (result?.error) {
+        if (result?.error) {
+          toast.error("Failed to impersonate user");
+        } else if (result?.url) {
+          router.push(result.url);
+        }
+      } catch (error) {
+        console.error("Impersonation error:", error);
         toast.error("Failed to impersonate user");
-      } else if (result?.url) {
-        router.push(result.url);
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error("Impersonation error:", error);
-      toast.error("Failed to impersonate user");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [callbackUrl, searchParams, router]);
+    },
+    [callbackUrl, searchParams, router],
+  );
 
-  
   React.useEffect(() => {
     const impersonateToken = searchParams?.get("impersonateToken");
     if (impersonateToken) {
@@ -69,7 +71,8 @@ export function AuthForm({ className, callbackUrl, ...props }: AuthFormProps) {
     setIsLoading(true);
     try {
       await signIn("google", {
-        callbackUrl: callbackUrl || searchParams?.get("callbackUrl") || "/app",
+        callbackUrl:
+          callbackUrl || searchParams?.get("callbackUrl") || "/dashboard",
       });
     } catch (error) {
       console.error("Authentication error:", error);
@@ -87,7 +90,8 @@ export function AuthForm({ className, callbackUrl, ...props }: AuthFormProps) {
         email: data.email,
         password: data.password,
         redirect: false,
-        callbackUrl: callbackUrl || searchParams?.get("callbackUrl") || "/app",
+        callbackUrl:
+          callbackUrl || searchParams?.get("callbackUrl") || "/dashboard",
       });
 
       if (result?.error) {
@@ -111,7 +115,8 @@ export function AuthForm({ className, callbackUrl, ...props }: AuthFormProps) {
       const result = await signIn("email", {
         email,
         redirect: false,
-        callbackUrl: callbackUrl || searchParams?.get("callbackUrl") || "/app",
+        callbackUrl:
+          callbackUrl || searchParams?.get("callbackUrl") || "/dashboard",
       });
 
       if (result?.error) {
@@ -157,7 +162,10 @@ export function AuthForm({ className, callbackUrl, ...props }: AuthFormProps) {
       </div>
 
       {showPasswordAuth ? (
-        <form onSubmit={handleSubmit(handlePasswordSignIn)} className="flex flex-col gap-4">
+        <form
+          onSubmit={handleSubmit(handlePasswordSignIn)}
+          className="flex flex-col gap-4"
+        >
           <div className="flex flex-col gap-2">
             <Label htmlFor="email">Email address</Label>
             <Input
@@ -196,7 +204,9 @@ export function AuthForm({ className, callbackUrl, ...props }: AuthFormProps) {
               className="w-full py-6"
             />
             {errors.password && (
-              <p className="text-sm text-destructive">{errors.password.message}</p>
+              <p className="text-sm text-destructive">
+                {errors.password.message}
+              </p>
             )}
           </div>
 

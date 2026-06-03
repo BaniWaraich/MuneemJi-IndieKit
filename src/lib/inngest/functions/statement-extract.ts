@@ -17,26 +17,17 @@ import {
   statementParseLog,
 } from "@/db/schema/muneem";
 import { downloadToBuffer } from "@/lib/muneem-storage/download";
-import { identifyBank } from "@/lib/statement-parser/identify-bank";
-import {
-  lookupScript,
-  generateScript,
-  storeScript,
-  deactivateScript,
-} from "@/lib/statement-parser/script-cache";
-import { runPdfplumberScript } from "@/lib/statement-parser/run-pdfplumber";
-import { extractHeaderText } from "@/lib/statement-parser/sandbox-client";
+import { extractPdfPages } from "@/lib/statement-parser/sandbox-client";
 import { parseCsvWithLlm } from "@/lib/statement-parser/csv-llm-parser";
+import { parsePdfWithLlm } from "@/lib/statement-parser/pdf-llm-parser";
 import {
   validateBalance,
   validateRunningBalances,
   assertSupportedCurrency,
 } from "@/lib/statement-parser/validate-balance";
-import { checkAndIncrementScriptGenQuota } from "@/lib/statement-parser/rate-limit";
 import {
   renderMarkdownKv,
   computeExtractionConfidence,
-  KvIntegrityError,
   type ExtractionMethod,
 } from "@/lib/statement-parser/render-markdown-kv";
 import type {
@@ -73,15 +64,53 @@ function isPdfBuffer(buf: Buffer): boolean {
   return buf.slice(0, 5).toString("ascii") === "%PDF-";
 }
 
+/**
+ * Locate a date (in any common bank-statement format) within the raw
+ * pdfplumber page JSON and return ~30 lines of context centred on the
+ * first match. Used only for diagnostics — best-effort, not exact.
+ */
+function sliceRawAroundDate(rawPagesJson: string, isoDate: string): string {
+  try {
+    const parsed = JSON.parse(rawPagesJson) as {
+      pages: { page: number; text: string }[];
+    };
+    const [y, m, d] = isoDate.split("-");
+    const candidates = [
+      `${d}/${m}/${y.slice(2)}`,
+      `${d}/${m}/${y}`,
+      `${d}-${m}-${y}`,
+      `${d}-${m}-${y.slice(2)}`,
+    ];
+    const fullText = parsed.pages
+      .map((p) => `===== PAGE ${p.page} =====\n${p.text}`)
+      .join("\n");
+    const lines = fullText.split("\n");
+    for (const needle of candidates) {
+      const hitIdx = lines.findIndex((line) => line.includes(needle));
+      if (hitIdx >= 0) {
+        const start = Math.max(0, hitIdx - 5);
+        const end = Math.min(lines.length, hitIdx + 25);
+        return lines.slice(start, end).join("\n");
+      }
+    }
+    return "no match for any candidate date format";
+  } catch (err) {
+    return `sliceRawAroundDate failed: ${(err as Error).message}`;
+  }
+}
+
 function balanceErrorMessage(
   balance: ReturnType<typeof validateBalance>,
   running: ReturnType<typeof validateRunningBalances>,
 ): string {
+  const parts: string[] = [];
   if (!balance.pass)
-    return `endpoint mismatch, computed=${balance.computedClosing}`;
+    parts.push(`endpoint mismatch, computed=${balance.computedClosing}`);
   if (!running.pass)
-    return `running-balance mismatch at row ${running.firstMismatchIndex}: expected=${running.expected}, got=${running.got}`;
-  return "unknown";
+    parts.push(
+      `running-balance mismatch at row ${running.firstMismatchIndex}: expected=${running.expected}, got=${running.got}`,
+    );
+  return parts.length ? parts.join("; ") : "unknown";
 }
 
 async function resolveFirmId(clientOrgId: string): Promise<string> {
@@ -339,210 +368,11 @@ async function handlePdf(
   ctx: LogCtx,
   sendEvent: (e: { name: string; data: object }) => Promise<void>,
 ): Promise<void> {
-  const bankId = await identifyBank(pdfBuffer);
-
-  let scriptCode: string;
-  let scriptId: string | null = null;
-  let isFromCache = false;
-
-  if (bankId) {
-    const cached = await lookupScript(firmId, bankId.bankIdentifier);
-    if (cached) {
-      scriptCode = cached.scriptCode;
-      scriptId = cached.id;
-      isFromCache = true;
-    } else {
-      await checkAndIncrementScriptGenQuota(firmId);
-      scriptCode = await generateScript(bankId.rawHeaderText);
-    }
-  } else {
-    const rawHeaderText = (await extractHeaderText(pdfBuffer)).trim();
-    await checkAndIncrementScriptGenQuota(firmId);
-    scriptCode = await generateScript(rawHeaderText);
-  }
-
-  let extraction: ExtractionResult;
-  try {
-    extraction = await runPdfplumberScript(scriptCode, pdfBuffer);
-  } catch (err) {
-    await safeWriteParseLog(
-      {
-        firmId,
-        statementId: statement.id,
-        parserScriptId: scriptId,
-        parseMethod: isFromCache ? "pdfplumber_cached" : "pdfplumber_new",
-        balanceCheckPass: false,
-        transactionsFound: 0,
-        openingBalance: null,
-        closingBalance: null,
-        computedClosing: null,
-        errorMessage:
-          `Script execution failed: ${(err as Error).message}`.slice(0, 500),
-      },
-      ctx,
-    );
-    throw err;
-  }
-
-  const balanceResult = validateBalance({
-    openingBalance: extraction.opening_balance,
-    closingBalance: extraction.closing_balance,
-    rows: extraction.transactions,
-  });
-  const runningBalances = validateRunningBalances({
-    rows: extraction.transactions,
-  });
-  const balancePass = balanceResult.pass && runningBalances.pass;
-
-  if (!balancePass && isFromCache) {
-    await deactivateScript(scriptId!);
-    const rawHeaderText = bankId?.rawHeaderText ?? "";
-    await checkAndIncrementScriptGenQuota(firmId);
-    const newScriptCode = await generateScript(rawHeaderText);
-
-    let retryExtraction: ExtractionResult;
-    try {
-      retryExtraction = await runPdfplumberScript(newScriptCode, pdfBuffer);
-    } catch (retryErr) {
-      await safeWriteParseLog(
-        {
-          firmId,
-          statementId: statement.id,
-          parserScriptId: null,
-          parseMethod: "pdfplumber_new",
-          balanceCheckPass: false,
-          transactionsFound: 0,
-          openingBalance: null,
-          closingBalance: null,
-          computedClosing: null,
-          errorMessage:
-            `Retry script execution failed: ${(retryErr as Error).message}`.slice(
-              0,
-              500,
-            ),
-        },
-        ctx,
-      );
-      throw retryErr;
-    }
-
-    const retryBalance = validateBalance({
-      openingBalance: retryExtraction.opening_balance,
-      closingBalance: retryExtraction.closing_balance,
-      rows: retryExtraction.transactions,
-    });
-    const retryRunning = validateRunningBalances({
-      rows: retryExtraction.transactions,
-    });
-    const retryPass = retryBalance.pass && retryRunning.pass;
-
-    await safeWriteParseLog(
-      {
-        firmId,
-        statementId: statement.id,
-        parserScriptId: null,
-        parseMethod: "pdfplumber_new",
-        balanceCheckPass: retryPass,
-        transactionsFound: retryExtraction.transactions.length,
-        openingBalance: BigInt(
-          Math.round(retryExtraction.opening_balance * 100),
-        ),
-        closingBalance: BigInt(
-          Math.round(retryExtraction.closing_balance * 100),
-        ),
-        computedClosing: retryBalance.computedClosing,
-        errorMessage: retryPass
-          ? null
-          : balanceErrorMessage(retryBalance, retryRunning),
-      },
-      ctx,
-    );
-
-    if (!retryPass) {
-      throw new Error(
-        `Balance validation failed on retry for statement ${statement.id}: ${balanceErrorMessage(retryBalance, retryRunning)}. No further retries.`,
-      );
-    }
-
-    if (bankId) {
-      await storeScript({
-        firmId,
-        bankIdentifier: bankId.bankIdentifier,
-        bankName: bankId.bankName,
-        country: bankId.country,
-        scriptCode: newScriptCode,
-        headerText: bankId.rawHeaderText,
-      });
-    }
-
-    const extractionConfidence = computeExtractionConfidence({
-      path: "pdfplumber_regen",
-      bankIdentified: bankId !== null,
-    });
-    await writePhase1Markdown(
-      statement,
-      ctx,
-      {
-        bank: bankId,
-        currency: (
-          retryExtraction.currency ||
-          statement.currency ||
-          "INR"
-        ).toUpperCase(),
-        openingBalance: retryExtraction.opening_balance,
-        closingBalance: retryExtraction.closing_balance,
-        transactions: retryExtraction.transactions,
-        extractionMethod: "pdfplumber_new",
-        extractionConfidence,
-      },
-      sendEvent,
-    );
-    return;
-  }
-
-  await safeWriteParseLog(
-    {
-      firmId,
-      statementId: statement.id,
-      parserScriptId: scriptId,
-      parseMethod: isFromCache ? "pdfplumber_cached" : "pdfplumber_new",
-      balanceCheckPass: balancePass,
-      transactionsFound: extraction.transactions.length,
-      openingBalance: BigInt(Math.round(extraction.opening_balance * 100)),
-      closingBalance: BigInt(Math.round(extraction.closing_balance * 100)),
-      computedClosing: balanceResult.computedClosing,
-      errorMessage: balancePass
-        ? null
-        : balanceErrorMessage(balanceResult, runningBalances),
-    },
-    ctx,
-  );
-
-  if (!balancePass) {
-    throw new Error(
-      `Balance validation failed for statement ${statement.id}: ${balanceErrorMessage(balanceResult, runningBalances)}`,
-    );
-  }
-
-  if (!isFromCache && bankId) {
-    await storeScript({
-      firmId,
-      bankIdentifier: bankId.bankIdentifier,
-      bankName: bankId.bankName,
-      country: bankId.country,
-      scriptCode,
-      headerText: bankId.rawHeaderText,
-    });
-  }
-
-  const path = isFromCache ? "pdfplumber_cached" : "pdfplumber_new_first_try";
-  const extractionConfidence = computeExtractionConfidence({
-    path,
-    bankIdentified: bankId !== null,
-  });
+  const rawPagesJson = await extractPdfPages(pdfBuffer);
+  const result = await parsePdfWithLlm(rawPagesJson);
 
   const currency = (
-    extraction.currency ||
+    result.currency ||
     statement.currency ||
     "INR"
   ).toUpperCase();
@@ -553,16 +383,100 @@ async function handlePdf(
     );
   }
 
+  const balanceResult = validateBalance({
+    openingBalance: result.opening_balance,
+    closingBalance: result.closing_balance,
+    rows: result.transactions,
+  });
+  const runningBalances = validateRunningBalances({
+    rows: result.transactions,
+  });
+  const isEmpty = result.transactions.length === 0;
+  const balancePass = balanceResult.pass && runningBalances.pass && !isEmpty;
+
+  const mismatchIdx = runningBalances.firstMismatchIndex;
+  const windowStart = mismatchIdx != null ? Math.max(0, mismatchIdx - 2) : 0;
+  const windowEnd =
+    mismatchIdx != null
+      ? Math.min(result.transactions.length, mismatchIdx + 3)
+      : 0;
+  const rowsAroundMismatch =
+    mismatchIdx != null
+      ? result.transactions.slice(windowStart, windowEnd).map((r, i) => ({
+          idx: windowStart + i,
+          ...r,
+        }))
+      : [];
+
+  // Best-effort: find the raw PDF page(s) that mention the dates in the
+  // window so the operator can eyeball raw vs parsed. We don't have an
+  // exact row→page map (LLM mediates), so we slice the raw text around
+  // the first matching date occurrence.
+  const rawPagesAroundMismatch =
+    mismatchIdx != null && rowsAroundMismatch.length > 0
+      ? sliceRawAroundDate(rawPagesJson, rowsAroundMismatch[0].date)
+      : "";
+
+  const diagnosticPayload = balancePass
+    ? null
+    : JSON.stringify({
+        reason: isEmpty
+          ? "empty"
+          : balanceErrorMessage(balanceResult, runningBalances),
+        opening_balance: result.opening_balance,
+        closing_balance: result.closing_balance,
+        computed_minor: balanceResult.computedClosing.toString(),
+        tx_count: result.transactions.length,
+        first_three: result.transactions.slice(0, 3),
+        last_three: result.transactions.slice(-3),
+        mismatch_idx: mismatchIdx,
+        llm_rows_around_mismatch: rowsAroundMismatch,
+        raw_text_around_mismatch: rawPagesAroundMismatch,
+      });
+
+  await safeWriteParseLog(
+    {
+      firmId,
+      statementId: statement.id,
+      parserScriptId: null,
+      parseMethod: "pdfplumber_new",
+      balanceCheckPass: balancePass,
+      transactionsFound: result.transactions.length,
+      openingBalance: BigInt(Math.round(result.opening_balance * 100)),
+      closingBalance: BigInt(Math.round(result.closing_balance * 100)),
+      computedClosing: balanceResult.computedClosing,
+      // No truncation — error_message is `text`. The raw + parsed
+      // side-by-side is the whole point of this diagnostic.
+      errorMessage: balancePass ? null : diagnosticPayload,
+    },
+    ctx,
+  );
+
+  if (!balancePass) {
+    throw new Error(
+      `PDF extraction failed for statement ${statement.id}: ${
+        isEmpty
+          ? "zero transactions"
+          : balanceErrorMessage(balanceResult, runningBalances)
+      }`,
+    );
+  }
+
+  const extractionConfidence = computeExtractionConfidence({
+    path: "pdfplumber_new_first_try",
+    bankIdentified: false,
+  });
+
   await writePhase1Markdown(
     statement,
     ctx,
     {
-      bank: bankId,
+      bank: null,
       currency,
-      openingBalance: extraction.opening_balance,
-      closingBalance: extraction.closing_balance,
-      transactions: extraction.transactions,
-      extractionMethod: isFromCache ? "pdfplumber_cached" : "pdfplumber_new",
+      openingBalance: result.opening_balance,
+      closingBalance: result.closing_balance,
+      transactions: result.transactions,
+      extractionMethod: "pdfplumber_new",
       extractionConfidence,
     },
     sendEvent,

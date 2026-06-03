@@ -9,7 +9,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py /app/server.py
-COPY extract-text.py /app/extract-text.py
+COPY extract-pages.py /app/extract-pages.py
+RUN chmod 0644 /app/server.py /app/extract-pages.py \
+ && mkdir -p /work && chown 1500:1500 /work
 
 USER 1500:1500
 EXPOSE 8080
