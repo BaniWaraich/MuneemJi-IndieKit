@@ -3,7 +3,7 @@ id: D03
 name: statement-interpretation
 status: IMPLEMENTED
 owners: [worker, schema]
-last_updated: 2026-05-03
+last_updated: 2026-06-03
 ---
 
 # D03 — Statement Interpretation
@@ -67,29 +67,29 @@ D03 is the **sole writer** of `bank_transactions`. Every column is owned by D03 
 
 D03 ships a Drizzle migration that adds six columns to `bank_transactions`. All columns are nullable for backfill compatibility and tightened later if needed.
 
-| New column | Type | Nullable | Default | Notes |
-|---|---|---|---|---|
-| `category` | `text` | yes | null | TS-enforced enum: `vendor_payment` \| `customer_receipt` \| `salary` \| `bank_charge` \| `inter_account_transfer` \| `loan_emi` \| `owner_drawing` \| `tax_payment` \| `unknown`. India-only enum in V1; Ireland/Canada extension is an open question (§12). |
-| `reasoning` | `text` | yes | null | One-sentence rule output or model output. Surfaces to CA on review. Read by D09 when promoting a correction back into `client_knowledge`. |
-| `interpretation_method` | `text` | yes | null | TS-enforced enum: `rule_known_vendor` \| `rule_known_customer` \| `rule_active_loan` \| `rule_inter_account` \| `rule_owner_drawing` \| `llm` \| `llm_fallback`. Enables auditing accuracy by path. |
-| `interpretation_confidence` | `numeric(3,2)` | yes | null | **Strict `numeric(3,2)` — never `real`/`double precision` to avoid float drift.** Range 0.00–1.00 enforced at write time. |
-| `matched_known_vendor_name` | `text` | yes | null | Free-text name from `client_knowledge.known_vendors[].name` when `rule_known_vendor` matched. Not a FK because vendors live in JSONB. |
-| `matched_active_loan_lender` | `text` | yes | null | Same idea for `active_loans[].lender`. |
+| New column                   | Type           | Nullable | Default | Notes                                                                                                                                                                                                                                                        |
+| ---------------------------- | -------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `category`                   | `text`         | yes      | null    | TS-enforced enum: `vendor_payment` \| `customer_receipt` \| `salary` \| `bank_charge` \| `inter_account_transfer` \| `loan_emi` \| `owner_drawing` \| `tax_payment` \| `unknown`. India-only enum in V1; Ireland/Canada extension is an open question (§12). |
+| `reasoning`                  | `text`         | yes      | null    | One-sentence rule output or model output. Surfaces to CA on review. Read by D09 when promoting a correction back into `client_knowledge`.                                                                                                                    |
+| `interpretation_method`      | `text`         | yes      | null    | TS-enforced enum: `rule_known_vendor` \| `rule_known_customer` \| `rule_active_loan` \| `rule_inter_account` \| `rule_owner_drawing` \| `llm` \| `llm_fallback`. Enables auditing accuracy by path.                                                          |
+| `interpretation_confidence`  | `numeric(3,2)` | yes      | null    | **Strict `numeric(3,2)` — never `real`/`double precision` to avoid float drift.** Range 0.00–1.00 enforced at write time.                                                                                                                                    |
+| `matched_known_vendor_name`  | `text`         | yes      | null    | Free-text name from `client_knowledge.known_vendors[].name` when `rule_known_vendor` matched. Not a FK because vendors live in JSONB.                                                                                                                        |
+| `matched_active_loan_lender` | `text`         | yes      | null    | Same idea for `active_loans[].lender`.                                                                                                                                                                                                                       |
 
 ### 4.2 Ownership table
 
-| Table | Ownership | Notes |
-|---|---|---|
-| `bank_transactions` | sole writer (all columns except future D06/D09 transitions) | Insert-only in V1 — no updates. Dedupe on `(statement_id, dedupe_key)` ON CONFLICT DO NOTHING. |
-| `bank_statements.status` | shared with D02 | D03 owns transitions `phase1_complete → parsed` and `phase1_complete → failed`. Cannot transition out of `parsed`. |
-| `bank_statements.error_message` | shared with D02 | D03 sets on D03-caused `failed` only. |
-| `statement_parse_log` (D03 columns only) | sole writer of: `normalisation_mode`, `normalised_row_count`, `normalised_sum_minor`, `error_message` (on D03-caused failure) | Wrapped in `safeWriteParseLog` — log-write failure must never mask the real D03 error. |
-| `bank_statements.phase1_markdown`, `period_start`, `period_end`, `currency` | reader only | Owned by D02. |
-| `client_profiles` | reader only | Owned by O03. Required at job start. |
-| `client_knowledge` | reader only | Owned by O03. Optional; missing degrades to Tier-1-only context. |
-| `bank_parser_scripts` | **never touches** | Owned by D02. |
-| `transaction_category_corrections` | **never touches** | Owned by D09. D03 writes the data D09 later compares against. |
-| `journal_entries` | **never touches** | Owned by D07 only. |
+| Table                                                                       | Ownership                                                                                                                     | Notes                                                                                                              |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `bank_transactions`                                                         | sole writer (all columns except future D06/D09 transitions)                                                                   | Insert-only in V1 — no updates. Dedupe on `(statement_id, dedupe_key)` ON CONFLICT DO NOTHING.                     |
+| `bank_statements.status`                                                    | shared with D02                                                                                                               | D03 owns transitions `phase1_complete → parsed` and `phase1_complete → failed`. Cannot transition out of `parsed`. |
+| `bank_statements.error_message`                                             | shared with D02                                                                                                               | D03 sets on D03-caused `failed` only.                                                                              |
+| `statement_parse_log` (D03 columns only)                                    | sole writer of: `normalisation_mode`, `normalised_row_count`, `normalised_sum_minor`, `error_message` (on D03-caused failure) | Wrapped in `safeWriteParseLog` — log-write failure must never mask the real D03 error.                             |
+| `bank_statements.phase1_markdown`, `period_start`, `period_end`, `currency` | reader only                                                                                                                   | Owned by D02.                                                                                                      |
+| `client_profiles`                                                           | reader only                                                                                                                   | Owned by O03. Required at job start.                                                                               |
+| `client_knowledge`                                                          | reader only                                                                                                                   | Owned by O03. Optional; missing degrades to Tier-1-only context.                                                   |
+| `bank_parser_scripts`                                                       | **never touches**                                                                                                             | Owned by D02.                                                                                                      |
+| `transaction_category_corrections`                                          | **never touches**                                                                                                             | Owned by D09. D03 writes the data D09 later compares against.                                                      |
+| `journal_entries`                                                           | **never touches**                                                                                                             | Owned by D07 only.                                                                                                 |
 
 ---
 
@@ -97,7 +97,7 @@ D03 ships a Drizzle migration that adds six columns to `bank_transactions`. All 
 
 D03 exposes no HTTP routes. It is a worker module.
 
-The HTTP routes that *expose* D03's outputs are owned by other modules:
+The HTTP routes that _expose_ D03's outputs are owned by other modules:
 
 - `GET /api/v1/clients/:id/statements/:sid/transactions` — lists `bank_transactions` for a parsed statement with category, reasoning, confidence, and method. Owned by D01 (statement read surface).
 - `PATCH /api/v1/clients/:id/statements/:sid/transactions/:tid` — CA override of category / needs_invoice. Writes a `transaction_category_corrections` row. Owned by D09, **not** D03; the override never mutates the D03-written `bank_transactions` row, preserving the audit trail.
@@ -111,7 +111,9 @@ The HTTP routes that *expose* D03's outputs are owned by other modules:
 **`statement.interpret.queue` — `statement.interpret`**
 
 ```ts
-{ statementId: string }
+{
+  statementId: string;
+}
 ```
 
 - jobId: `interpret-{statementId}` (idempotency key)
@@ -157,13 +159,13 @@ For each statement:
 
 ### 7.2 Rule pre-filter (in order; first match wins)
 
-| Order | Rule | Input fields | Match condition | Output |
-|---|---|---|---|---|
-| 1 | inter-account transfer | `client_profiles.bank_accounts[]` | description contains any `account_number_last4` from a `bank_accounts` entry **other than the statement's own account** | `category=inter_account_transfer`, `needs_invoice=false`, `method=rule_inter_account`, `reasoning="Inter-account transfer to/from {account_label}"`, conf=1.0 |
-| 2 | known vendor | `client_knowledge.known_vendors[]` | description contains any `description_patterns[i]` (case-insensitive substring) | `category=vendor_payment`, `needs_invoice=vendor.needs_invoice`, `method=rule_known_vendor`, `matched_known_vendor_name=vendor.name`, `reasoning="Matched known vendor: {vendor.name}"`, conf=1.0 |
-| 3 | known customer | `client_knowledge.known_customers[]` | description contains any `description_patterns[i]` (case-insensitive substring) | `category=customer_receipt`, `needs_invoice=false`, `method=rule_known_customer`, `reasoning="Matched known customer: {customer.name}"`, conf=1.0 |
-| 4 | active loan | `client_knowledge.active_loans[]` | description contains `description_pattern` (case-insensitive substring) | `category=loan_emi`, `needs_invoice=false`, `method=rule_active_loan`, `matched_active_loan_lender=loan.lender`, `reasoning="Matched active loan: {loan.lender} ({loan.loan_type})"`, conf=1.0 |
-| 5 | owner drawing | `client_knowledge.owner_drawings_pattern` | `debit_minor > 0` AND description contains `owner_drawings_pattern.typical_description_pattern` (case-insensitive substring) | `category=owner_drawing`, `needs_invoice=false`, `method=rule_owner_drawing`, `reasoning="Matched owner drawings pattern"`, conf=1.0 |
+| Order | Rule                   | Input fields                              | Match condition                                                                                                              | Output                                                                                                                                                                                            |
+| ----- | ---------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | inter-account transfer | `client_profiles.bank_accounts[]`         | description contains any `account_number_last4` from a `bank_accounts` entry **other than the statement's own account**      | `category=inter_account_transfer`, `needs_invoice=false`, `method=rule_inter_account`, `reasoning="Inter-account transfer to/from {account_label}"`, conf=1.0                                     |
+| 2     | known vendor           | `client_knowledge.known_vendors[]`        | description contains any `description_patterns[i]` (case-insensitive substring)                                              | `category=vendor_payment`, `needs_invoice=vendor.needs_invoice`, `method=rule_known_vendor`, `matched_known_vendor_name=vendor.name`, `reasoning="Matched known vendor: {vendor.name}"`, conf=1.0 |
+| 3     | known customer         | `client_knowledge.known_customers[]`      | description contains any `description_patterns[i]` (case-insensitive substring)                                              | `category=customer_receipt`, `needs_invoice=false`, `method=rule_known_customer`, `reasoning="Matched known customer: {customer.name}"`, conf=1.0                                                 |
+| 4     | active loan            | `client_knowledge.active_loans[]`         | description contains `description_pattern` (case-insensitive substring)                                                      | `category=loan_emi`, `needs_invoice=false`, `method=rule_active_loan`, `matched_active_loan_lender=loan.lender`, `reasoning="Matched active loan: {loan.lender} ({loan.loan_type})"`, conf=1.0    |
+| 5     | owner drawing          | `client_knowledge.owner_drawings_pattern` | `debit_minor > 0` AND description contains `owner_drawings_pattern.typical_description_pattern` (case-insensitive substring) | `category=owner_drawing`, `needs_invoice=false`, `method=rule_owner_drawing`, `reasoning="Matched owner drawings pattern"`, conf=1.0                                                              |
 
 Rules are short-circuit ordered: if rule 2 matches, rules 3–5 are not evaluated. The order reflects specificity — inter-account is rarest and most certain when it matches; owner drawings is the most permissive and runs last.
 
@@ -314,17 +316,25 @@ Each `## Transaction N` block is copied verbatim from D02's `phase1_markdown`. T
 ### 8.3 Output schema (Zod-validated)
 
 ```ts
-z.array(z.object({
-  transaction_index: z.number().int().positive(),
-  needs_invoice: z.boolean(),
-  category: z.enum([
-    'vendor_payment', 'customer_receipt', 'salary', 'bank_charge',
-    'inter_account_transfer', 'loan_emi', 'owner_drawing',
-    'tax_payment', 'unknown',
-  ]),
-  reasoning: z.string().min(1),
-  confidence: z.number().min(0).max(1),
-}));
+z.array(
+  z.object({
+    transaction_index: z.number().int().positive(),
+    needs_invoice: z.boolean(),
+    category: z.enum([
+      "vendor_payment",
+      "customer_receipt",
+      "salary",
+      "bank_charge",
+      "inter_account_transfer",
+      "loan_emi",
+      "owner_drawing",
+      "tax_payment",
+      "unknown",
+    ]),
+    reasoning: z.string().min(1),
+    confidence: z.number().min(0).max(1),
+  }),
+);
 ```
 
 After parse: assert that the set of `transaction_index` values exactly matches the set of unmatched indices sent in. Mismatch → schema-mismatch retry; on second failure → fallback per §7.4.
@@ -343,10 +353,10 @@ After parse: assert that the set of `transaction_index` values exactly matches t
 
 Reference: PRD v6 §21 (D03 corresponds to "Phase 5 normalisation").
 
-| Component | Per unit | Frequency | Notes |
-|---|---|---|---|
+| Component                            | Per unit                                     | Frequency     | Notes                                                                                                                                                                                                     |
+| ------------------------------------ | -------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GPT-4o mini call (one per statement) | ~$0.001 baseline; rises with unmatched count | per statement | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M assumed in PRD; D03 prompt is heavier (+~500–1,000 tokens of client context) but only the residue is in the user message, so net cost depends on rule hit rate |
-| Postgres writes | negligible | per row | one bulk insert + one row update + one log row |
+| Postgres writes                      | negligible                                   | per row       | one bulk insert + one row update + one log row                                                                                                                                                            |
 
 **Expected cost trajectory:**
 
@@ -365,20 +375,20 @@ Reference: PRD v6 §21 (D03 corresponds to "Phase 5 normalisation").
 
 ## 10. Failure Modes
 
-| Failure | Trigger | Impact | Severity | Recovery |
-|---|---|---|---|---|
-| `MissingClientProfileError` | `client_profiles` row absent for `client_org_id` | Statement marked `failed`, no retry; CA support seeds the profile and re-runs | high | Manual — CA support inserts profile, re-enqueues. Loud-fail-by-design (option (ii) in spec discussion). |
-| `InvalidPhase1MarkdownError` | `phase1_markdown` is null or fails to parse against the D02 contract | Statement marked `failed` | high | Indicates D02 produced bad output — investigate D02. Should be impossible if D02 integrity guards held. |
-| `StatementNotInPhase1Complete` | Pre-flight: status is anything other than `phase1_complete` | No-op return, idempotent | low | Self-resolving (job re-enqueued for an already-parsed statement). |
-| `LlmCallError` (first attempt) | OpenAI API timeout, error, or empty response | Retry one more time | medium | Self-resolving on retry. |
-| `LlmSchemaError` (first attempt) | Output failed Zod parse or `transaction_index` set mismatch | Retry one more time | medium | Self-resolving. |
-| `LlmFallbackApplied` | Both LLM attempts failed | **Not a failure** — degrades to per-row fallback (§7.4); statement still parses; rows flagged for CA | medium | CA reviews flagged rows. `statement_parse_log.normalisation_mode='fallback'` records the run. |
-| `NormalisationIntegrityError` (row count) | Rows-to-insert count ≠ frontmatter `transaction_count` | Statement marked `failed`, nothing inserted | high | Hard block by design — guarantees no silent data loss. Investigate the LLM output that caused it; may indicate model regression. |
-| `NormalisationIntegrityError` (sum) | Σ amount_minor of D03 rows ≠ Σ (debit + credit) from D02 KV | Statement marked `failed`, nothing inserted | high | Same as above. |
-| `DbWriteError` (transient) | Postgres connection blip, deadlock, etc. | BullMQ retries the whole job | medium | Self-resolving. The whole D03 run re-executes; idempotent thanks to dedupeKey + status guards. |
-| `DbWriteError` (persistent) | Schema constraint violation, FK error | Statement marked `failed` | high | Indicates a D03 / schema bug. Sentry alerts. |
-| `RuleEvaluationError` | Malformed JSONB in `client_knowledge` (e.g., `description_patterns` not array) | Treat as no-rule-match, log warning, continue to LLM path | low | O03 owns data integrity; D03 logs and proceeds. |
-| `TenantIsolationError` (theoretical) | `client_profiles` or `bank_transactions` write touches the wrong `client_org_id` | **Critical** — cross-tenant leakage | critical | Hardcoded `client_org_id` filter in every read/write; unit-test asserts isolation; if it ever fires, halt the worker. |
+| Failure                                   | Trigger                                                                          | Impact                                                                                               | Severity | Recovery                                                                                                                         |
+| ----------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `MissingClientProfileError`               | `client_profiles` row absent for `client_org_id`                                 | Statement marked `failed`, no retry; CA support seeds the profile and re-runs                        | high     | Manual — CA support inserts profile, re-enqueues. Loud-fail-by-design (option (ii) in spec discussion).                          |
+| `InvalidPhase1MarkdownError`              | `phase1_markdown` is null or fails to parse against the D02 contract             | Statement marked `failed`                                                                            | high     | Indicates D02 produced bad output — investigate D02. Should be impossible if D02 integrity guards held.                          |
+| `StatementNotInPhase1Complete`            | Pre-flight: status is anything other than `phase1_complete`                      | No-op return, idempotent                                                                             | low      | Self-resolving (job re-enqueued for an already-parsed statement).                                                                |
+| `LlmCallError` (first attempt)            | OpenAI API timeout, error, or empty response                                     | Retry one more time                                                                                  | medium   | Self-resolving on retry.                                                                                                         |
+| `LlmSchemaError` (first attempt)          | Output failed Zod parse or `transaction_index` set mismatch                      | Retry one more time                                                                                  | medium   | Self-resolving.                                                                                                                  |
+| `LlmFallbackApplied`                      | Both LLM attempts failed                                                         | **Not a failure** — degrades to per-row fallback (§7.4); statement still parses; rows flagged for CA | medium   | CA reviews flagged rows. `statement_parse_log.normalisation_mode='fallback'` records the run.                                    |
+| `NormalisationIntegrityError` (row count) | Rows-to-insert count ≠ frontmatter `transaction_count`                           | Statement marked `failed`, nothing inserted                                                          | high     | Hard block by design — guarantees no silent data loss. Investigate the LLM output that caused it; may indicate model regression. |
+| `NormalisationIntegrityError` (sum)       | Σ amount_minor of D03 rows ≠ Σ (debit + credit) from D02 KV                      | Statement marked `failed`, nothing inserted                                                          | high     | Same as above.                                                                                                                   |
+| `DbWriteError` (transient)                | Postgres connection blip, deadlock, etc.                                         | BullMQ retries the whole job                                                                         | medium   | Self-resolving. The whole D03 run re-executes; idempotent thanks to dedupeKey + status guards.                                   |
+| `DbWriteError` (persistent)               | Schema constraint violation, FK error                                            | Statement marked `failed`                                                                            | high     | Indicates a D03 / schema bug. Sentry alerts.                                                                                     |
+| `RuleEvaluationError`                     | Malformed JSONB in `client_knowledge` (e.g., `description_patterns` not array)   | Treat as no-rule-match, log warning, continue to LLM path                                            | low      | O03 owns data integrity; D03 logs and proceeds.                                                                                  |
+| `TenantIsolationError` (theoretical)      | `client_profiles` or `bank_transactions` write touches the wrong `client_org_id` | **Critical** — cross-tenant leakage                                                                  | critical | Hardcoded `client_org_id` filter in every read/write; unit-test asserts isolation; if it ever fires, halt the worker.            |
 
 D03 has **no terminal failures from LLM unavailability.** That is policy, not an oversight (§7.4).
 
@@ -389,7 +399,7 @@ D03 has **no terminal failures from LLM unavailability.** That is policy, not an
 **Depends on (modules):**
 
 - **D02 — statement-format-extraction** for the `phase1_markdown` document and the `phase1_complete` status.
-- **O03 — client-knowledge-capture** for `client_profiles` (required) and `client_knowledge` (optional). D03 spec is independent of O03's spec but D03's *operational utility* depends on Tier 1 being seeded for every active client.
+- **O03 — client-knowledge-capture** for `client_profiles` (required) and `client_knowledge` (optional). D03 spec is independent of O03's spec but D03's _operational utility_ depends on Tier 1 being seeded for every active client.
 - **F02 — tenant-isolation** for `client_org_id` scoping.
 
 **Depended on by (modules):**
@@ -430,13 +440,14 @@ D03 has **no terminal failures from LLM unavailability.** That is policy, not an
 5. **Match-queue payload contract.** §6 specifies a placeholder shape for `match.scan`; D06 will pin the actual contract. Coordinate when D06 is specced.
 6. **LLM model choice.** `gpt-4o-mini` is the cost-optimal default. If alpha shows >5% LLM fallback rate or >10% CA-correction rate on `method=llm`, evaluate `gpt-4o` or `gpt-4.1-mini` — the prompt is small enough that the price gap may be tolerable.
 7. **Description-matching robustness.** Current rule pre-filter uses case-insensitive substring matching. Indian bank descriptions contain noise (account numbers, transaction reference IDs, partial names). Consider adding a normalisation step (uppercase, strip digits, collapse whitespace) before substring match — but be careful not to over-normalise and create false positives.
-8. **Rule-hit reasoning depth.** Rules currently produce a templated `reasoning` string. When D09 promotes a CA correction back into `client_knowledge`, the original `reasoning` doesn't capture *why* the engine got it wrong (e.g., the description pattern was too narrow). Consider richer reasoning that includes the matched substring — but adds storage cost.
+8. **Rule-hit reasoning depth.** Rules currently produce a templated `reasoning` string. When D09 promotes a CA correction back into `client_knowledge`, the original `reasoning` doesn't capture _why_ the engine got it wrong (e.g., the description pattern was too narrow). Consider richer reasoning that includes the matched substring — but adds storage cost.
 9. **Per-row LLM confidence reliability.** Models tend to over-state confidence. Consider clamping LLM-stated confidence to `[0.5, 0.9]` until calibrated against alpha correction data.
 
 ---
 
 ## 13. Change Log
 
-| Date | Change | By |
-|---|---|---|
-| 2026-05-03 | Initial spec; status `SPECCED`. Adds six columns to `bank_transactions` via Drizzle migration. Pins the rule pre-filter (5 rules), the LLM prompt template, the integrity checks (row count + sum), the fallback policy (graceful degrade, never hard-fail on LLM unavailability), the missing-profile policy (loud hard-fail in alpha), and the `match.scan` enqueue. Lifts content from `docs/archive/client-knowledge-schema.md` (which sketched the prompt template) and rescopes to D03-only. | Bani / Claude |
+| Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | By            |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 2026-05-03 | Initial spec; status `SPECCED`. Adds six columns to `bank_transactions` via Drizzle migration. Pins the rule pre-filter (5 rules), the LLM prompt template, the integrity checks (row count + sum), the fallback policy (graceful degrade, never hard-fail on LLM unavailability), the missing-profile policy (loud hard-fail in alpha), and the `match.scan` enqueue. Lifts content from `docs/archive/client-knowledge-schema.md` (which sketched the prompt template) and rescopes to D03-only.                                                                                                                                                                                                 | Bani / Claude |
+| 2026-06-03 | **Fixed statements stuck at `phase1_complete`.** D03 ran all work (incl. a 2×120s LLM call) in one `step.run`; on Vercel Hobby (~60s function cap) LLM-heavy statements were killed mid-step before writing `parsed` _or_ `failed`, so Inngest retried forever. Decomposed into Inngest steps: `prepare` → `classify-chunk-{i}` (one step per ~20-tx batch, single bounded `LLM_TIMEOUT_MS=45s` attempt; per-chunk fallback on retry exhaustion) → `finalize` (re-derives deterministically, sets `parsed`) → `step.sendEvent` for `muneem/interpretation.complete`. Added `onFailure` to mark `failed` when retries exhaust. `classifyResidueWithLlm` replaced by `classifyChunk` + `chunkArray`. | Bani / Claude |
