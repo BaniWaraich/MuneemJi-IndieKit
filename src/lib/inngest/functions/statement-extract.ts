@@ -8,7 +8,7 @@
  * On completion, sends "muneem/statement.extracted" to trigger D03.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { inngest } from "@/lib/inngest/client";
 import { db } from "@/db";
 import {
@@ -212,6 +212,38 @@ export const statementExtract = inngest.createFunction(
     concurrency: { limit: 2 },
     retries: 3,
     triggers: [{ event: "muneem/statement.uploaded" }],
+    // Safety net: if all retries are exhausted — including a serverless
+    // timeout-kill that bypasses the in-handler try/catch — mark the statement
+    // failed so it surfaces instead of silently sitting at 'processing'.
+    onFailure: async ({
+      error,
+      event,
+      step,
+    }: {
+      error: Error;
+      event: { data: { statementId: string } };
+      step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> };
+    }) => {
+      const { statementId } = event.data;
+      await step.run("mark-failed", async () => {
+        await db
+          .update(bankStatements)
+          .set({
+            status: "failed",
+            errorMessage: String(error?.message ?? error).slice(0, 500),
+          })
+          .where(
+            and(
+              eq(bankStatements.id, statementId),
+              notInArray(bankStatements.status, [
+                "phase1_complete",
+                "parsed",
+                "empty",
+              ]),
+            ),
+          );
+      });
+    },
   },
   async ({
     event,

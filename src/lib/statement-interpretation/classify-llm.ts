@@ -1,21 +1,26 @@
-import OpenAI from 'openai';
-import { z } from 'zod';
-import { extractCodeBlock } from '../statement-parser/extract-code-block';
-import type { Phase1Transaction } from './parse-markdown-kv';
+import OpenAI from "openai";
+import { z } from "zod";
+import { extractCodeBlock } from "../statement-parser/extract-code-block";
 
-const MODEL = 'gpt-4o-mini';
-const LLM_TIMEOUT_MS = 120_000;
+const MODEL = "gpt-4o-mini";
+// Bounded well under the Vercel serverless cap (Hobby kills at ~60s). One
+// attempt per Inngest step invocation; Inngest step-retries cover transient
+// failures, each with a fresh time budget. See classifyChunk.
+const LLM_TIMEOUT_MS = 45_000;
+// Transactions per LLM call. A ~20-row gpt-4o-mini call returns in a few
+// seconds, so each classify-chunk step stays far under the serverless cap.
+export const CHUNK_SIZE = 20;
 
 export const LLM_CATEGORIES = [
-  'vendor_payment',
-  'customer_receipt',
-  'salary',
-  'bank_charge',
-  'inter_account_transfer',
-  'loan_emi',
-  'owner_drawing',
-  'tax_payment',
-  'unknown',
+  "vendor_payment",
+  "customer_receipt",
+  "salary",
+  "bank_charge",
+  "inter_account_transfer",
+  "loan_emi",
+  "owner_drawing",
+  "tax_payment",
+  "unknown",
 ] as const;
 
 export type LlmCategory = (typeof LLM_CATEGORIES)[number];
@@ -85,73 +90,78 @@ const getOpenAI = () => (_openai ??= new OpenAI());
 export class LlmCallError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'LlmCallError';
+    this.name = "LlmCallError";
   }
 }
 
 export class LlmSchemaError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'LlmSchemaError';
+    this.name = "LlmSchemaError";
   }
 }
-
-export type ClassifyResult =
-  | { mode: 'llm'; classifications: Map<number, LlmClassification> }
-  | { mode: 'fallback' };
 
 /**
- * Two attempts. On first failure (network/schema/index-set mismatch), retry.
- * On second failure, return mode='fallback' — the caller (D03 worker) applies
- * §7.4 per-row defaults. This function never throws on LLM unavailability;
- * that is policy per spec §7.4.
+ * BigInt-free shape passed across Inngest step boundaries (step return values
+ * must be JSON-serialisable; BigInt is not). The D03 `prepare` step maps
+ * Phase1Transaction → ClassifyInputTx (amounts stringified) before chunking.
  */
-export async function classifyResidueWithLlm(
-  unmatched: Phase1Transaction[],
-  clientContextBlock: string,
-  signal?: AbortSignal,
-): Promise<ClassifyResult> {
-  if (unmatched.length === 0) {
-    return { mode: 'llm', classifications: new Map() };
+export type ClassifyInputTx = {
+  transaction_index: number;
+  date: string;
+  description: string;
+  debit_minor: string;
+  credit_minor: string;
+  balance_minor: string;
+};
+
+/** Split into fixed-size chunks (one LLM call / Inngest step per chunk). */
+export function chunkArray<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
   }
-
-  const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace('{CLIENT_CONTEXT}', clientContextBlock);
-  const userMessage = buildUserMessage(unmatched);
-  const expectedIndices = new Set(unmatched.map((t) => t.transaction_index));
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const parsed = await callLlm(systemPrompt, userMessage, signal);
-      assertIndexSetMatches(parsed, expectedIndices);
-      const classifications = new Map<number, LlmClassification>();
-      for (const row of parsed) classifications.set(row.transaction_index, row);
-      return { mode: 'llm', classifications };
-    } catch (err) {
-      if (attempt === 0) {
-        console.warn('classify-llm: attempt 1 failed, retrying:', err);
-        continue;
-      }
-      console.error('classify-llm: both attempts failed, falling back:', err);
-    }
-  }
-
-  return { mode: 'fallback' };
+  return out;
 }
 
-function buildUserMessage(unmatched: Phase1Transaction[]): string {
-  const blocks = unmatched
+/**
+ * Classify a single chunk with ONE bounded LLM call. Throws on failure
+ * (network / malformed JSON / schema / index-set mismatch) so the caller's
+ * Inngest step retries it with a fresh time budget; the D03 function wraps each
+ * chunk step in try/catch to degrade to per-row fallback if it ultimately
+ * fails. Never call this with more than ~CHUNK_SIZE transactions.
+ */
+export async function classifyChunk(
+  chunk: ClassifyInputTx[],
+  clientContextBlock: string,
+  signal?: AbortSignal,
+): Promise<LlmClassification[]> {
+  if (chunk.length === 0) return [];
+  const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace(
+    "{CLIENT_CONTEXT}",
+    clientContextBlock,
+  );
+  const userMessage = buildUserMessage(chunk);
+  const expectedIndices = new Set(chunk.map((t) => t.transaction_index));
+  const parsed = await callLlm(systemPrompt, userMessage, signal);
+  assertIndexSetMatches(parsed, expectedIndices);
+  return parsed;
+}
+
+function buildUserMessage(chunk: ClassifyInputTx[]): string {
+  const blocks = chunk
     .map((tx) =>
       [
         `## Transaction ${tx.transaction_index}`,
         `- date: ${tx.date}`,
         `- description: ${tx.description}`,
-        `- debit_minor: ${tx.debit_minor.toString()}`,
-        `- credit_minor: ${tx.credit_minor.toString()}`,
-        `- balance_minor: ${tx.balance_minor.toString()}`,
-      ].join('\n'),
+        `- debit_minor: ${tx.debit_minor}`,
+        `- credit_minor: ${tx.credit_minor}`,
+        `- balance_minor: ${tx.balance_minor}`,
+      ].join("\n"),
     )
-    .join('\n\n');
-  return `Classify these ${unmatched.length} transactions:\n\n${blocks}`;
+    .join("\n\n");
+  return `Classify these ${chunk.length} transactions:\n\n${blocks}`;
 }
 
 async function callLlm(
@@ -166,8 +176,8 @@ async function callLlm(
         model: MODEL,
         temperature: 0,
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
         ],
       },
       { timeout: LLM_TIMEOUT_MS, signal },
@@ -177,7 +187,7 @@ async function callLlm(
   }
 
   const raw = res.choices[0]?.message?.content?.trim();
-  if (!raw) throw new LlmCallError('GPT-4o mini returned empty response');
+  if (!raw) throw new LlmCallError("GPT-4o mini returned empty response");
 
   let parsed: unknown;
   try {
@@ -193,14 +203,19 @@ async function callLlm(
   return result.data;
 }
 
-function assertIndexSetMatches(rows: LlmClassification[], expected: Set<number>): void {
+function assertIndexSetMatches(
+  rows: LlmClassification[],
+  expected: Set<number>,
+): void {
   const got = new Set(rows.map((r) => r.transaction_index));
   if (got.size !== expected.size) {
     throw new LlmSchemaError(`expected ${expected.size} rows, got ${got.size}`);
   }
   for (const idx of expected) {
     if (!got.has(idx)) {
-      throw new LlmSchemaError(`expected transaction_index ${idx} missing from response`);
+      throw new LlmSchemaError(
+        `expected transaction_index ${idx} missing from response`,
+      );
     }
   }
 }
