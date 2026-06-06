@@ -17,7 +17,11 @@ import {
   statementParseLog,
 } from "@/db/schema/muneem";
 import { downloadToBuffer } from "@/lib/muneem-storage/download";
-import { extractPdfPages } from "@/lib/statement-parser/sandbox-client";
+import {
+  extractPdfPages,
+  EncryptedPdfError,
+  WrongPdfPasswordError,
+} from "@/lib/statement-parser/sandbox-client";
 import { parseCsvWithLlm } from "@/lib/statement-parser/csv-llm-parser";
 import { parsePdfWithLlm } from "@/lib/statement-parser/pdf-llm-parser";
 import {
@@ -239,6 +243,10 @@ export const statementExtract = inngest.createFunction(
                 "phase1_complete",
                 "parsed",
                 "empty",
+                // Locked-PDF states are not failures — never let onFailure
+                // overwrite them with `failed`.
+                "password_required",
+                "unlocking",
               ]),
             ),
           );
@@ -250,11 +258,14 @@ export const statementExtract = inngest.createFunction(
     step,
     logger,
   }: {
-    event: { id: string; data: { statementId: string } };
+    event: { id: string; data: { statementId: string; password?: string } };
     step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> };
     logger: { info: (msg: string, ctx?: object) => void };
   }) => {
-    const { statementId } = event.data as { statementId: string };
+    const { statementId, password } = event.data as {
+      statementId: string;
+      password?: string;
+    };
 
     await step.run("extract-statement", async () => {
       const statement = await db.query.bankStatements.findFirst({
@@ -262,8 +273,14 @@ export const statementExtract = inngest.createFunction(
       });
       if (!statement) throw new Error(`Statement ${statementId} not found`);
 
-      // Idempotency: skip if already past D02
-      if (statement.status !== "processing") {
+      // Idempotency: process only fresh uploads (`processing`) and unlock
+      // retries (`unlocking`, set by the unlock route when re-firing this
+      // event with a password). Any other status means D02 already ran or is
+      // awaiting user input — skip.
+      if (
+        statement.status !== "processing" &&
+        statement.status !== "unlocking"
+      ) {
         logger.info("statement-extract: skipping non-processing statement", {
           statementId,
           status: statement.status,
@@ -291,7 +308,7 @@ export const statementExtract = inngest.createFunction(
 
       try {
         if (isPdfBuffer(fileBuffer)) {
-          await handlePdf(statement, firmId, fileBuffer, ctx, sendEvent);
+          await handlePdf(statement, firmId, fileBuffer, ctx, sendEvent, password);
         } else if (statement.filename.toLowerCase().endsWith(".csv")) {
           await handleCsv(statement, firmId, fileBuffer, ctx, sendEvent);
         } else {
@@ -300,6 +317,30 @@ export const statementExtract = inngest.createFunction(
           );
         }
       } catch (err) {
+        // Locked-PDF signals are NOT failures: park the statement in
+        // `password_required` and return normally so Inngest does not retry
+        // and onFailure does not mark it `failed`. The password (if any) is
+        // never logged or persisted.
+        if (
+          err instanceof EncryptedPdfError ||
+          err instanceof WrongPdfPasswordError
+        ) {
+          const wrong = err instanceof WrongPdfPasswordError;
+          await db
+            .update(bankStatements)
+            .set({
+              status: "password_required",
+              errorMessage: wrong
+                ? "The password you entered is incorrect. Please try again."
+                : null,
+            })
+            .where(eq(bankStatements.id, statement.id));
+          log("info", "statement-extract: awaiting PDF password", ctx, {
+            wrongPassword: wrong,
+          });
+          return;
+        }
+
         const message = (
           err instanceof Error ? err.message : String(err)
         ).slice(0, 500);
@@ -399,8 +440,11 @@ async function handlePdf(
   pdfBuffer: Buffer,
   ctx: LogCtx,
   sendEvent: (e: { name: string; data: object }) => Promise<void>,
+  password?: string,
 ): Promise<void> {
-  const rawPagesJson = await extractPdfPages(pdfBuffer);
+  // password (when present) unlocks encrypted PDFs. extractPdfPages throws
+  // EncryptedPdfError / WrongPdfPasswordError, caught by the orchestrator above.
+  const rawPagesJson = await extractPdfPages(pdfBuffer, password);
   const result = await parsePdfWithLlm(rawPagesJson);
 
   const currency = (

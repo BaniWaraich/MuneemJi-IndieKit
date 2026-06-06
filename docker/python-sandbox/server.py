@@ -98,11 +98,20 @@ def healthz():
 
 @app.post("/extract-pages")
 def extract_pages():
-    """Run the baked-in extract-pages.py — no LLM code accepted."""
+    """Run the baked-in extract-pages.py — no LLM code accepted.
+
+    Optional request field "password" unlocks an encrypted PDF. The password
+    is passed straight to the subprocess as argv[2] and is NEVER written to a
+    log line (see _log, which only ever receives jobId/status/timing/exitCode).
+    """
     started = time.monotonic()
     body = request.get_json(silent=True) or {}
     job_id = str(body.get("jobId") or uuid.uuid4().hex[:12])
     pdf_b64 = body.get("pdfBase64")
+    # Optional. Coerce to str so a non-string never reaches the CLI; empty /
+    # missing means "no password supplied" (extract-pages.py exit 2 path).
+    raw_password = body.get("password")
+    password = raw_password if isinstance(raw_password, str) and raw_password else None
     try:
         pdf_bytes = _decode_pdf(pdf_b64)
     except ValueError as exc:
@@ -113,20 +122,38 @@ def extract_pages():
     pdf_path = Path(workdir) / "input.pdf"
     try:
         pdf_path.write_bytes(pdf_bytes)
+        cmd = [PYTHON_BIN, PAGES_SCRIPT, str(pdf_path)]
+        if password is not None:
+            cmd.append(password)
         try:
             result = _run(
-                [PYTHON_BIN, PAGES_SCRIPT, str(pdf_path)],
+                cmd,
                 cwd=workdir,
                 timeout=PAGES_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
             _log(job_id, "timeout", int((time.monotonic() - started) * 1000))
             return jsonify({"error": "timeout", "timeoutSeconds": PAGES_TIMEOUT_S}), 504
+
+        exit_code = result["exitCode"]
+
+        # Encryption signals from extract-pages.py. The password never appears
+        # in this log line or the response body.
+        if exit_code == 2:
+            _log(job_id, "encrypted", int((time.monotonic() - started) * 1000))
+            return jsonify({"error": "encrypted", "requiresPassword": True}), 422
+        if exit_code == 3:
+            _log(job_id, "wrong_password", int((time.monotonic() - started) * 1000))
+            return (
+                jsonify({"error": "wrong_password", "requiresPassword": True}),
+                422,
+            )
+
         _log(
             job_id,
-            "ok" if result["exitCode"] == 0 else "error",
+            "ok" if exit_code == 0 else "error",
             int((time.monotonic() - started) * 1000),
-            exitCode=result["exitCode"],
+            exitCode=exit_code,
         )
         return jsonify(result)
     finally:

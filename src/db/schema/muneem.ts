@@ -149,7 +149,16 @@ export const bankStatements = pgTable(
     scanAttempts: integer("scan_attempts").notNull().default(0),
     quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
     status: text("status", {
-      enum: ["processing", "phase1_complete", "parsed", "empty", "failed"],
+      enum: [
+        "processing",
+        "phase1_complete",
+        "parsed",
+        "empty",
+        "failed",
+        // Task 1 — Locked PDF Support:
+        "password_required", // sandbox detected encryption; awaiting user password
+        "unlocking", // password received; re-processing in progress
+      ],
     })
       .notNull()
       .default("processing"),
