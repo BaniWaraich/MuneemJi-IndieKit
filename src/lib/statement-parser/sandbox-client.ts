@@ -71,10 +71,19 @@ async function callSandbox(
       | SandboxErrorResponse;
     if (!res.ok) {
       const err = payload as SandboxErrorResponse;
-      // 422 + requiresPassword: encrypted-PDF signal. Map to typed errors so
-      // the Inngest function can branch without parsing strings. Never log or
-      // attach the password here — it is not present in the response body.
-      if (res.status === 422 && err.requiresPassword) {
+      // 422 encrypted-PDF signal. Map to typed errors so the Inngest function
+      // can branch without parsing strings. The stable discriminator is the
+      // `error` value ("encrypted" / "wrong_password"); `requiresPassword` is a
+      // redundant flag kept as an additional accepted signal so a version-skewed
+      // sandbox (one that omits it) still routes correctly instead of falling
+      // through to a generic failure. Never log or attach the password here — it
+      // is not present in the response body.
+      if (
+        res.status === 422 &&
+        (err.error === "wrong_password" ||
+          err.error === "encrypted" ||
+          err.requiresPassword)
+      ) {
         if (err.error === "wrong_password") throw new WrongPdfPasswordError();
         throw new EncryptedPdfError();
       }
