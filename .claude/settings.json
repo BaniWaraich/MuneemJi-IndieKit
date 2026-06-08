@@ -27,7 +27,8 @@
   },
   "env": {
     "NODE_ENV": "development",
-    "NEXT_PUBLIC_APP_ENV": "development"
+    "NEXT_PUBLIC_APP_ENV": "development",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
   "hooks": {
     "SessionStart": [

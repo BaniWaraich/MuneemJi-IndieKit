@@ -1,32 +1,44 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { StatementUnlockPrompt } from "./statements/[sid]/statement-unlock-prompt";
 
 type Statement = {
   id: string;
   filename: string;
-  status: 'processing' | 'phase1_complete' | 'parsed' | 'empty' | 'failed';
+  status:
+    | "processing"
+    | "phase1_complete"
+    | "parsed"
+    | "empty"
+    | "failed"
+    | "password_required"
+    | "unlocking";
   periodStart: string | null;
   periodEnd: string | null;
   currency: string;
   createdAt: string;
 };
 
-function StatusBadge({ status }: { status: Statement['status'] }) {
-  const styles: Record<Statement['status'], string> = {
-    processing: 'bg-amber-50 text-amber-700 border-amber-200',
-    phase1_complete: 'bg-blue-50 text-blue-700 border-blue-200',
-    parsed: 'bg-green-50 text-green-700 border-green-200',
-    empty: 'bg-neutral-50 text-neutral-700 border-neutral-200',
-    failed: 'bg-red-50 text-red-700 border-red-200',
+function StatusBadge({ status }: { status: Statement["status"] }) {
+  const styles: Record<Statement["status"], string> = {
+    processing: "bg-amber-50 text-amber-700 border-amber-200",
+    phase1_complete: "bg-blue-50 text-blue-700 border-blue-200",
+    parsed: "bg-green-50 text-green-700 border-green-200",
+    empty: "bg-neutral-50 text-neutral-700 border-neutral-200",
+    failed: "bg-red-50 text-red-700 border-red-200",
+    password_required: "bg-amber-50 text-amber-700 border-amber-200",
+    unlocking: "bg-blue-50 text-blue-700 border-blue-200",
   };
   const label = {
-    processing: 'Processing',
-    phase1_complete: 'Phase 1 complete',
-    parsed: 'Parsed',
-    empty: 'No transactions',
-    failed: 'Failed',
+    processing: "Processing",
+    phase1_complete: "Phase 1 complete",
+    parsed: "Parsed",
+    empty: "No transactions",
+    failed: "Failed",
+    password_required: "Password needed",
+    unlocking: "Unlocking",
   }[status];
   return (
     <span
@@ -38,10 +50,10 @@ function StatusBadge({ status }: { status: Statement['status'] }) {
 }
 
 function formatDate(iso: string): string {
-  return new Intl.DateTimeFormat('en-IN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
   }).format(new Date(iso));
 }
 
@@ -60,7 +72,9 @@ export function StatementsPanel({
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
-    const res = await fetch(`/api/v1/clients/${clientOrgId}/statements`, { cache: 'no-store' });
+    const res = await fetch(`/api/v1/clients/${clientOrgId}/statements`, {
+      cache: "no-store",
+    });
     if (res.ok) {
       const data = (await res.json()) as { statements: Statement[] };
       setStatements(data.statements);
@@ -68,8 +82,10 @@ export function StatementsPanel({
   }, [clientOrgId]);
 
   useEffect(() => {
-    const anyProcessing = statements.some((s) => s.status === 'processing');
-    if (!anyProcessing) return;
+    const anyInFlight = statements.some(
+      (s) => s.status === "processing" || s.status === "unlocking",
+    );
+    if (!anyInFlight) return;
     const timer = setInterval(refresh, 3000);
     return () => clearInterval(timer);
   }, [statements, refresh]);
@@ -78,42 +94,48 @@ export function StatementsPanel({
     e.preventDefault();
     const file = fileRef.current?.files?.[0];
     if (!file) {
-      setUploadError('Choose a file first.');
+      setUploadError("Choose a file first.");
       return;
     }
     setUploadError(null);
     setUploading(true);
     try {
-      const createRes = await fetch(`/api/v1/clients/${clientOrgId}/statements`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename: file.name,
-          contentType: file.type || 'application/octet-stream',
-          fileSizeBytes: file.size,
-        }),
-      });
-      if (!createRes.ok) throw new Error('Failed to start upload');
+      const createRes = await fetch(
+        `/api/v1/clients/${clientOrgId}/statements`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type || "application/octet-stream",
+            fileSizeBytes: file.size,
+          }),
+        },
+      );
+      if (!createRes.ok) throw new Error("Failed to start upload");
       const { statementId, uploadUrl } = (await createRes.json()) as {
         statementId: string;
         uploadUrl: string;
       };
 
       const putRes = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
       });
-      if (!putRes.ok) throw new Error('Upload to storage failed');
+      if (!putRes.ok) throw new Error("Upload to storage failed");
 
-      const confirmRes = await fetch(`/api/v1/clients/${clientOrgId}/statements/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ statementId }),
-      });
-      if (!confirmRes.ok) throw new Error('Failed to confirm upload');
+      const confirmRes = await fetch(
+        `/api/v1/clients/${clientOrgId}/statements/confirm`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ statementId }),
+        },
+      );
+      if (!confirmRes.ok) throw new Error("Failed to confirm upload");
 
-      if (fileRef.current) fileRef.current.value = '';
+      if (fileRef.current) fileRef.current.value = "";
       await refresh();
     } catch (err) {
       setUploadError((err as Error).message);
@@ -124,7 +146,9 @@ export function StatementsPanel({
 
   return (
     <section className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
-      <h2 className="text-lg font-semibold text-neutral-900">Bank statements</h2>
+      <h2 className="text-lg font-semibold text-neutral-900">
+        Bank statements
+      </h2>
       <p className="mt-1 text-sm text-neutral-500">
         Upload a CSV or PDF. We parse it into transactions automatically.
       </p>
@@ -142,32 +166,43 @@ export function StatementsPanel({
           disabled={uploading}
           className="bg-primary hover:bg-primary-hover focus:ring-primary inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {uploading ? 'Uploading…' : 'Upload statement'}
+          {uploading ? "Uploading…" : "Upload statement"}
         </button>
       </form>
 
       <div className="mt-6 border-t border-neutral-200 pt-4">
         {statements.length === 0 ? (
-          <p className="text-sm text-neutral-500">No statements uploaded yet.</p>
+          <p className="text-sm text-neutral-500">
+            No statements uploaded yet.
+          </p>
         ) : (
           <ul className="divide-y divide-neutral-200">
             {statements.map((s) => (
-              <li key={s.id} className="flex items-center justify-between py-3">
-                <div className="min-w-0">
-                  <Link
-                    href={`${detailHrefPrefix}/${s.id}`}
-                    className="text-primary hover:text-primary-hover truncate text-sm font-medium"
-                  >
-                    {s.filename}
-                  </Link>
-                  <p className="text-xs text-neutral-500">
-                    {s.periodStart && s.periodEnd
-                      ? `${formatDate(s.periodStart)} – ${formatDate(s.periodEnd)} · `
-                      : ''}
-                    {s.currency} · uploaded {formatDate(s.createdAt)}
-                  </p>
+              <li key={s.id} className="py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <Link
+                      href={`${detailHrefPrefix}/${s.id}`}
+                      className="text-primary hover:text-primary-hover truncate text-sm font-medium"
+                    >
+                      {s.filename}
+                    </Link>
+                    <p className="text-xs text-neutral-500">
+                      {s.periodStart && s.periodEnd
+                        ? `${formatDate(s.periodStart)} – ${formatDate(s.periodEnd)} · `
+                        : ""}
+                      {s.currency} · uploaded {formatDate(s.createdAt)}
+                    </p>
+                  </div>
+                  <StatusBadge status={s.status} />
                 </div>
-                <StatusBadge status={s.status} />
+                {s.status === "password_required" && (
+                  <StatementUnlockPrompt
+                    clientOrgId={clientOrgId}
+                    statementId={s.id}
+                    onSubmitted={refresh}
+                  />
+                )}
               </li>
             ))}
           </ul>
