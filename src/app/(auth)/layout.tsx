@@ -1,7 +1,16 @@
+"use client";
+
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 export default function AuthLayout({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  // BO login is a full-page cream/crimson screen matching /login.
+  if (pathname === "/owner/login") {
+    return <>{children}</>;
+  }
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-neutral-50 px-4 py-12 sm:px-6 lg:px-8">
       <div className="w-full max-w-md space-y-8">

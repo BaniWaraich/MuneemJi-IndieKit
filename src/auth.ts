@@ -20,6 +20,11 @@ import { eq } from "drizzle-orm";
 
 // Overrides default session type
 declare module "next-auth" {
+  interface User {
+    impersonatedBy?: string;
+    role?: "ca_admin" | "ca_staff" | "business_owner";
+    firmId?: string;
+  }
   interface Session {
     user: {
       id: string;
@@ -47,17 +52,17 @@ const emailProvider: EmailConfig = {
   async sendVerificationRequest(params) {
     if (process.env.NODE_ENV === "development") {
       console.log(
-        `Magic link for ${params.identifier}: ${params.url} expires at ${params.expires}`
+        `Magic link for ${params.identifier}: ${params.url} expires at ${params.expires}`,
       );
     }
     const html = await render(
-      MagicLinkEmail({ url: params.url, expiresAt: params.expires })
+      MagicLinkEmail({ url: params.url, expiresAt: params.expires }),
     );
 
     await sendMail(
       params.identifier,
       `Sign in to ${appConfig.projectName}`,
-      html
+      html,
     );
   },
 };
@@ -106,7 +111,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       }
       // Muneem Ji: expose role + firmId on session for CA staff
       if (token.role) {
-        session.user.role = token.role as "ca_admin" | "ca_staff" | "business_owner";
+        session.user.role = token.role as
+          | "ca_admin"
+          | "ca_staff"
+          | "business_owner";
       }
       if (token.firmId) {
         session.user.firmId = token.firmId as string;
@@ -119,7 +127,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.impersonatedBy = user.impersonatedBy;
       }
 
-      // Muneem Ji: load role + firmId from app_user on first sign-in
+      // BO client-credentials returns role + firmId on the user object.
+      // Persist them first — client_users rows are not in app_user.
+      if (user?.role) token.role = user.role;
+      if (user?.firmId) token.firmId = user.firmId;
+
+      // Muneem Ji: load role + firmId from app_user on first sign-in (CA staff)
       if (user?.id) {
         const dbUser = await db
           .select({ role: users.role, firmId: users.firmId })
@@ -195,7 +208,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
                 // Verify password
                 const passwordCorrect = await verifyPassword(
                   credentials.password as string,
-                  user.password
+                  user.password,
                 );
 
                 if (!passwordCorrect) {
@@ -235,7 +248,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         try {
           // The token is already URL encoded, decryptJson handles the decoding
           const impersonationToken = await decryptJson<ImpersonateToken>(
-            credentials.signedToken as string
+            credentials.signedToken as string,
           );
 
           // Validate token expiry
@@ -281,7 +294,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             .limit(1)
             .then((rows) => rows[0]);
           if (!row) return null;
-          const ok = await verifyPassword(credentials.password as string, row.passwordHash);
+          const ok = await verifyPassword(
+            credentials.password as string,
+            row.passwordHash,
+          );
           if (!ok) return null;
           return {
             id: row.id,
