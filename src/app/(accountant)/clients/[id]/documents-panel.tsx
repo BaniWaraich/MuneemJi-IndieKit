@@ -27,6 +27,8 @@ const API_ERRORS: Record<string, string> = {
     "Storage is full (500 MB for the firm). Free space or ask your accountant.",
   FILE_TOO_LARGE: "Each file must be 25 MB or smaller.",
   UPLOAD_NOT_FOUND: "Upload didn't finish. Try again.",
+  STORAGE_NOT_CONFIGURED:
+    "File storage isn't configured on this server. Check AWS S3 env vars.",
 };
 
 function formatDate(iso: string): string {
@@ -75,6 +77,7 @@ async function errorFromResponse(res: Response): Promise<string> {
     }
     if (res.status === 413) return API_ERRORS.FILE_TOO_LARGE;
     if (res.status === 402) return API_ERRORS.STORAGE_LIMIT_EXCEEDED;
+    if (res.status === 503) return API_ERRORS.STORAGE_NOT_CONFIGURED;
   } catch {
     /* ignore */
   }

@@ -13,7 +13,6 @@ import { db } from "@/db";
 import {
   bankStatements,
   clientOrgs,
-  clientProfiles,
   clientKnowledge,
 } from "@/db/schema/muneem";
 import {
@@ -45,6 +44,7 @@ import {
   type InterpretationMethod,
   type InterpretedRow,
 } from "@/lib/statement-interpretation/insert-transactions";
+import { ensureClientProfile } from "@/lib/client-profile/ensure-profile";
 
 type LogCtx = {
   runId?: string;
@@ -52,6 +52,16 @@ type LogCtx = {
   clientOrgId?: string;
   firmId?: string;
 };
+
+/** D03 may retry after a prior missing-profile failure left status=failed. */
+function isInterpretableStatus(
+  status: string,
+  phase1Markdown: string | null,
+): boolean {
+  if (status === "phase1_complete") return Boolean(phase1Markdown);
+  if (status === "failed") return Boolean(phase1Markdown);
+  return false;
+}
 
 function log(
   level: "info" | "warn" | "error",
@@ -189,14 +199,7 @@ async function loadProfileAndPrefilter(
   if (!org)
     throw new NonRetriableError(`clientOrg ${statement.clientOrgId} not found`);
 
-  const profile = await db.query.clientProfiles.findFirst({
-    where: eq(clientProfiles.clientOrgId, statement.clientOrgId),
-  });
-  if (!profile) {
-    throw new NonRetriableError(
-      `client_profiles row missing for client_org ${statement.clientOrgId}`,
-    );
-  }
+  const profile = await ensureClientProfile(statement.clientOrgId);
 
   const knowledge =
     (await db.query.clientKnowledge.findFirst({
@@ -293,12 +296,11 @@ export const statementInterpret = inngest.createFunction(
       if (!statement)
         throw new NonRetriableError(`Statement ${statementId} not found`);
 
-      // Idempotency / phase gate: only run from phase1_complete.
-      if (statement.status !== "phase1_complete") {
-        logger.info(
-          "statement-interpret: skipping non-phase1_complete statement",
-          { statementId, status: statement.status },
-        );
+      if (!isInterpretableStatus(statement.status, statement.phase1Markdown)) {
+        logger.info("statement-interpret: skipping statement", {
+          statementId,
+          status: statement.status,
+        });
         return { skip: true as const };
       }
 
@@ -368,12 +370,11 @@ export const statementInterpret = inngest.createFunction(
       });
       if (!statement)
         throw new NonRetriableError(`Statement ${statementId} not found`);
-      // Idempotency: a prior attempt may already have committed.
-      if (statement.status !== "phase1_complete") {
-        logger.info(
-          "statement-interpret: finalize skip (already past phase1)",
-          { statementId, status: statement.status },
-        );
+      if (!isInterpretableStatus(statement.status, statement.phase1Markdown)) {
+        logger.info("statement-interpret: finalize skip", {
+          statementId,
+          status: statement.status,
+        });
         return;
       }
 

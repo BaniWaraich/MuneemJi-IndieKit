@@ -6,8 +6,10 @@ import {
   accountantFirms,
   clientContacts,
   clientOrgs,
+  clientProfiles,
   clientUsers,
 } from "@/db/schema/muneem";
+import { defaultClientProfileValues } from "@/lib/client-profile/default-profile-values";
 import { ownerSignupSchema } from "@/lib/validations/owner-signup.schema";
 
 const PLATFORM_FIRM_EMAIL = "platform-owners@muneemji.internal";
@@ -97,6 +99,15 @@ export async function POST(request: Request) {
         email: emailNorm,
         name,
         passwordHash,
+      });
+
+      // D03 requires client_profiles — seed defaults until BO/CA completes O03.
+      await tx.insert(clientProfiles).values({
+        clientOrgId: org.id,
+        ...defaultClientProfileValues({
+          industry: businessName,
+          description: `${businessName} — update your business profile for better classification.`,
+        }),
       });
     });
   } catch (err) {
