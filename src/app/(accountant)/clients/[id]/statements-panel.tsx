@@ -57,6 +57,29 @@ function formatDate(iso: string): string {
   }).format(new Date(iso));
 }
 
+const API_ERRORS: Record<string, string> = {
+  STORAGE_LIMIT_EXCEEDED:
+    "Storage is full (500 MB for the firm). Free space or ask your accountant.",
+  FILE_TOO_LARGE: "Each statement must be 25 MB or smaller.",
+  UPLOAD_NOT_FOUND: "Upload didn't finish. Try again.",
+  STORAGE_NOT_CONFIGURED:
+    "File storage isn't configured on this server. Check AWS S3 env vars.",
+};
+
+async function errorFromResponse(res: Response): Promise<string> {
+  try {
+    const data = (await res.json()) as { error?: string };
+    const code = data.error;
+    if (code && API_ERRORS[code]) return API_ERRORS[code];
+    if (res.status === 413) return API_ERRORS.FILE_TOO_LARGE;
+    if (res.status === 402) return API_ERRORS.STORAGE_LIMIT_EXCEEDED;
+    if (res.status === 503) return API_ERRORS.STORAGE_NOT_CONFIGURED;
+  } catch {
+    /* ignore */
+  }
+  return "Something went wrong. Please try again.";
+}
+
 export function StatementsPanel({
   clientOrgId,
   initial,
@@ -112,18 +135,21 @@ export function StatementsPanel({
           }),
         },
       );
-      if (!createRes.ok) throw new Error("Failed to start upload");
+      if (!createRes.ok) {
+        throw new Error(await errorFromResponse(createRes));
+      }
       const { statementId, uploadUrl } = (await createRes.json()) as {
         statementId: string;
         uploadUrl: string;
       };
 
+      const contentType = file.type || "application/octet-stream";
       const putRes = await fetch(uploadUrl, {
         method: "PUT",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        headers: { "Content-Type": contentType },
         body: file,
       });
-      if (!putRes.ok) throw new Error("Upload to storage failed");
+      if (!putRes.ok) throw new Error("Upload to storage failed. Try again.");
 
       const confirmRes = await fetch(
         `/api/v1/clients/${clientOrgId}/statements/confirm`,
@@ -133,7 +159,9 @@ export function StatementsPanel({
           body: JSON.stringify({ statementId }),
         },
       );
-      if (!confirmRes.ok) throw new Error("Failed to confirm upload");
+      if (!confirmRes.ok) {
+        throw new Error(await errorFromResponse(confirmRes));
+      }
 
       if (fileRef.current) fileRef.current.value = "";
       await refresh();

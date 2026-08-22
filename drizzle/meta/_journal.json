@@ -36,6 +36,13 @@
       "when": 1787399366429,
       "tag": "0004_f09_gmail_connect",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787406000000,
+      "tag": "0005_d04_documents_extensions",
+      "breakpoints": true
     }
   ]
 }

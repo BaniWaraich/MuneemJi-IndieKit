@@ -9,7 +9,10 @@ import {
   UnauthorizedError,
   ForbiddenError,
 } from "@/lib/auth/tenant";
-import { presignPut } from "@/lib/muneem-storage/presign";
+import {
+  presignPut,
+  StorageNotConfiguredError,
+} from "@/lib/muneem-storage/presign";
 import {
   getFirmStorageBytes,
   MAX_FIRM_STORAGE_BYTES,
@@ -106,6 +109,12 @@ export async function POST(
       { status: 200 },
     );
   } catch (e) {
+    if (e instanceof StorageNotConfiguredError) {
+      return NextResponse.json(
+        { error: "STORAGE_NOT_CONFIGURED" },
+        { status: 503 },
+      );
+    }
     if (e instanceof UnauthorizedError) {
       return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
     }
@@ -140,6 +149,12 @@ export async function GET(
 
     return NextResponse.json({ statements: rows });
   } catch (e) {
+    if (e instanceof StorageNotConfiguredError) {
+      return NextResponse.json(
+        { error: "STORAGE_NOT_CONFIGURED" },
+        { status: 503 },
+      );
+    }
     if (e instanceof UnauthorizedError) {
       return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
     }
