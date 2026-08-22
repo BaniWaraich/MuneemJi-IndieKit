@@ -1,11 +1,12 @@
-import { desc, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { bankStatements } from '@/db/schema/muneem';
-import { requireOwnerSession } from '@/lib/auth/tenant';
-import { StatementsPanel } from '@/app/(accountant)/clients/[id]/statements-panel';
+import { desc, eq } from "drizzle-orm";
+import { db } from "@/db";
+import { bankStatements } from "@/db/schema/muneem";
+import { getOwnerSession } from "@/lib/auth/tenant";
+import { StatementsPanel } from "@/app/(accountant)/clients/[id]/statements-panel";
 
 export default async function OwnerStatementsPage() {
-  const session = await requireOwnerSession();
+  const session = await getOwnerSession();
+  if (!session) return null;
 
   const rows = await db
     .select({
@@ -31,7 +32,8 @@ export default async function OwnerStatementsPage() {
       <div>
         <h2 className="text-2xl font-semibold text-neutral-900">Statements</h2>
         <p className="mt-1 text-sm text-neutral-500">
-          Upload your bank statement and we&apos;ll pull out each transaction automatically.
+          Upload your bank statement and we&apos;ll pull out each transaction
+          automatically.
         </p>
       </div>
       <StatementsPanel

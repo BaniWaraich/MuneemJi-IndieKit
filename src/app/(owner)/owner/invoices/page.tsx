@@ -1,11 +1,12 @@
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { documents } from "@/db/schema/muneem";
-import { requireOwnerSession } from "@/lib/auth/tenant";
+import { getOwnerSession } from "@/lib/auth/tenant";
 import { DocumentsPanel } from "@/app/(accountant)/clients/[id]/documents-panel";
 
 export default async function OwnerInvoicesPage() {
-  const session = await requireOwnerSession();
+  const session = await getOwnerSession();
+  if (!session) return null;
 
   const rows = await db
     .select({

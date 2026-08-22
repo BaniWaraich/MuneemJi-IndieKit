@@ -7,7 +7,7 @@ import { usePathname } from "next/navigation";
 export default function AuthLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   // BO login is a full-page cream/crimson screen matching /login.
-  if (pathname === "/owner/login") {
+  if (pathname === "/owner/login" || pathname === "/owner/signup") {
     return <>{children}</>;
   }
 

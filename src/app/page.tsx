@@ -248,7 +248,7 @@ export default function MuneemJiPage() {
           }
         });
       },
-      { threshold: 0.12, rootMargin: "0px 0px -40px 0px" }
+      { threshold: 0.12, rootMargin: "0px 0px -40px 0px" },
     );
     els.forEach((el) => io.observe(el));
     return () => io.disconnect();
@@ -272,10 +272,18 @@ export default function MuneemJiPage() {
             <span className="font-display nav-brand-text">Muneem Ji</span>
           </a>
           <div className="nav-links">
-            <a href="#for-cas" className="ulink">For CAs</a>
-            <a href="#for-owners" className="ulink">For Business Owners</a>
-            <a href="#find-ca" className="ulink">Find a CA</a>
-            <a href="/login" className="ulink text-muted">Sign in</a>
+            <a href="#for-cas" className="ulink">
+              For CAs
+            </a>
+            <a href="#for-owners" className="ulink">
+              For Business Owners
+            </a>
+            <a href="#find-ca" className="ulink">
+              Find a CA
+            </a>
+            <a href="/login" className="ulink text-muted">
+              Sign in
+            </a>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <a
@@ -315,8 +323,13 @@ export default function MuneemJiPage() {
             </div>
 
             <h1 className="font-display h-display reveal h1">
-              Where the<br />
-              <span className="font-display-wonk italic text-crimson">paperwork</span> ends<br />
+              Where the
+              <br />
+              <span className="font-display-wonk italic text-crimson">
+                paperwork
+              </span>{" "}
+              ends
+              <br />
               and the books begin.
             </h1>
 
@@ -330,15 +343,25 @@ export default function MuneemJiPage() {
                     maxWidth: "34ch",
                   }}
                 >
-                  Muneem Ji is a practice OS for Chartered Accountants — a branded website,
-                  a clean way to collect client documents, and a double-entry day book at the end of it.
+                  Muneem Ji is a practice OS for Chartered Accountants — a
+                  branded website, a clean way to collect client documents, and
+                  a double-entry day book at the end of it.
                 </p>
               </div>
               <div className="col-5 col-5-start8 reveal">
-                <p style={{ fontSize: 14.5, lineHeight: 1.65, color: "var(--muted)" }}>
-                  Zoho Books assumes your documents are already organised.
-                  We are what gets them organised — the messy step{" "}
-                  <em className="font-display italic" style={{ color: "var(--ink-2)" }}>
+                <p
+                  style={{
+                    fontSize: 14.5,
+                    lineHeight: 1.65,
+                    color: "var(--muted)",
+                  }}
+                >
+                  Zoho Books assumes your documents are already organised. We
+                  are what gets them organised — the messy step{" "}
+                  <em
+                    className="font-display italic"
+                    style={{ color: "var(--ink-2)" }}
+                  >
                     before
                   </em>{" "}
                   any ledger can be written.
@@ -356,33 +379,78 @@ export default function MuneemJiPage() {
               <div className="entry-grid">
                 <a href="#for-cas" className="entry-card crimson reveal">
                   <div className="top">
-                    <div className="h-eyebrow role-meta">For practising CAs</div>
-                    <span className="arrow" style={{ fontSize: 22, lineHeight: 1 }}>→</span>
+                    <div className="h-eyebrow role-meta">
+                      For practising CAs
+                    </div>
+                    <span
+                      className="arrow"
+                      style={{ fontSize: 22, lineHeight: 1 }}
+                    >
+                      →
+                    </span>
                   </div>
-                  <h3 className="font-display">I&rsquo;m a Chartered Accountant</h3>
-                  <p style={{ marginTop: 12, fontSize: 14.5, lineHeight: 1.6, color: "var(--muted)" }} className="role-meta">
-                    Get a website under your own brand, collect documents from every client, and export a clean day book.
+                  <h3 className="font-display">
+                    I&rsquo;m a Chartered Accountant
+                  </h3>
+                  <p
+                    style={{
+                      marginTop: 12,
+                      fontSize: 14.5,
+                      lineHeight: 1.6,
+                      color: "var(--muted)",
+                    }}
+                    className="role-meta"
+                  >
+                    Get a website under your own brand, collect documents from
+                    every client, and export a clean day book.
                   </p>
                   <ul className="role-list">
-                    <li><span className="bullet" /> Branded site</li>
-                    <li><span className="bullet" /> Document intake</li>
-                    <li><span className="bullet" /> Day book export</li>
+                    <li>
+                      <span className="bullet" /> Branded site
+                    </li>
+                    <li>
+                      <span className="bullet" /> Document intake
+                    </li>
+                    <li>
+                      <span className="bullet" /> Day book export
+                    </li>
                   </ul>
                 </a>
 
                 <a href="#for-owners" className="entry-card reveal">
                   <div className="top">
-                    <div className="h-eyebrow role-meta">For business owners</div>
-                    <span className="arrow" style={{ fontSize: 22, lineHeight: 1 }}>→</span>
+                    <div className="h-eyebrow role-meta">
+                      For business owners
+                    </div>
+                    <span
+                      className="arrow"
+                      style={{ fontSize: 22, lineHeight: 1 }}
+                    >
+                      →
+                    </span>
                   </div>
                   <h3 className="font-display">I run a business</h3>
-                  <p style={{ marginTop: 12, fontSize: 14.5, lineHeight: 1.6, color: "var(--muted)" }}>
-                    Find a Chartered Accountant on Muneem Ji — or start organising your own documents while you look.
+                  <p
+                    style={{
+                      marginTop: 12,
+                      fontSize: 14.5,
+                      lineHeight: 1.6,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    Find a Chartered Accountant on Muneem Ji — or start
+                    organising your own documents while you look.
                   </p>
                   <ul className="role-list">
-                    <li><span className="bullet" /> Find a CA</li>
-                    <li><span className="bullet" /> Document vault</li>
-                    <li><span className="bullet" /> Hand off cleanly</li>
+                    <li>
+                      <span className="bullet" /> Find a CA
+                    </li>
+                    <li>
+                      <span className="bullet" /> Document vault
+                    </li>
+                    <li>
+                      <span className="bullet" /> Hand off cleanly
+                    </li>
                   </ul>
                 </a>
               </div>
@@ -401,31 +469,88 @@ export default function MuneemJiPage() {
 
             <div className="grid12">
               <div className="col-7 reveal">
-                <h2 className="font-display h-section" style={{ fontWeight: 400 }}>
+                <h2
+                  className="font-display h-section"
+                  style={{ fontWeight: 400 }}
+                >
                   Bookkeeping software begins where{" "}
-                  <span className="font-display-wonk italic text-crimson">the real work ends</span>.
+                  <span className="font-display-wonk italic text-crimson">
+                    the real work ends
+                  </span>
+                  .
                 </h2>
-                <p style={{ marginTop: 24, fontSize: 17, lineHeight: 1.65, maxWidth: "58ch", color: "var(--ink-2)" }}>
-                  Every CA already has a stack of WhatsApp messages, courier envelopes, and forwarded
-                  emails. Bank statements arrive late. Invoices arrive in three formats. By the time
-                  a ledger can be written, the month is already gone. Muneem Ji is built for the
-                  forty hours that happen <em className="font-display italic">before</em> Tally opens.
+                <p
+                  style={{
+                    marginTop: 24,
+                    fontSize: 17,
+                    lineHeight: 1.65,
+                    maxWidth: "58ch",
+                    color: "var(--ink-2)",
+                  }}
+                >
+                  Every CA already has a stack of WhatsApp messages, courier
+                  envelopes, and forwarded emails. Bank statements arrive late.
+                  Invoices arrive in three formats. By the time a ledger can be
+                  written, the month is already gone. Muneem Ji is built for the
+                  forty hours that happen{" "}
+                  <em className="font-display italic">before</em> Tally opens.
                 </p>
               </div>
 
               <div className="col-5 reveal">
-                <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 24 }}>
+                <ol
+                  style={{
+                    listStyle: "none",
+                    padding: 0,
+                    margin: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 24,
+                  }}
+                >
                   {[
-                    { n: "01", k: "collection", t: "Clients send what you ask for, in the format you asked for." },
-                    { n: "02", k: "order", t: "Statements, invoices and receipts land in one shared, searchable place." },
-                    { n: "03", k: "output", t: "Out comes a tidy double-entry day book — ready for whatever ledger you keep." },
+                    {
+                      n: "01",
+                      k: "collection",
+                      t: "Clients send what you ask for, in the format you asked for.",
+                    },
+                    {
+                      n: "02",
+                      k: "order",
+                      t: "Statements, invoices and receipts land in one shared, searchable place.",
+                    },
+                    {
+                      n: "03",
+                      k: "output",
+                      t: "Out comes a tidy double-entry day book — ready for whatever ledger you keep.",
+                    },
                   ].map((item) => (
-                    <li key={item.n} style={{ borderTop: "1px solid var(--rule)", paddingTop: 20 }}>
-                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <li
+                      key={item.n}
+                      style={{
+                        borderTop: "1px solid var(--rule)",
+                        paddingTop: 20,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          justifyContent: "space-between",
+                        }}
+                      >
                         <span className="index-num">{item.n}</span>
                         <span className="h-eyebrow">{item.k}</span>
                       </div>
-                      <p className="font-display" style={{ fontSize: 22, marginTop: 8, lineHeight: 1.35, fontWeight: 400 }}>
+                      <p
+                        className="font-display"
+                        style={{
+                          fontSize: 22,
+                          marginTop: 8,
+                          lineHeight: 1.35,
+                          fontWeight: 400,
+                        }}
+                      >
                         {item.t}
                       </p>
                     </li>
@@ -437,7 +562,11 @@ export default function MuneemJiPage() {
         </section>
 
         {/* HOW IT WORKS */}
-        <section id="for-cas" className="bordered noise" style={{ background: "var(--cream-2)", position: "relative" }}>
+        <section
+          id="for-cas"
+          className="bordered noise"
+          style={{ background: "var(--cream-2)", position: "relative" }}
+        >
           <div className="container-x padded">
             <div className="sec-divider reveal" style={{ marginBottom: 48 }}>
               <span className="h-eyebrow">How it works · for CAs</span>
@@ -445,7 +574,10 @@ export default function MuneemJiPage() {
               <span className="index-num">— ch. two</span>
             </div>
 
-            <h2 className="font-display h-section reveal" style={{ fontWeight: 400, maxWidth: "22ch" }}>
+            <h2
+              className="font-display h-section reveal"
+              style={{ fontWeight: 400, maxWidth: "22ch" }}
+            >
               Three movements. One quiet practice.
             </h2>
 
@@ -455,10 +587,13 @@ export default function MuneemJiPage() {
                   <span className="step-num">01</span>
                   <span className="h-eyebrow">Set up</span>
                 </div>
-                <h3 className="font-display">A website, in your name, by tomorrow morning.</h3>
+                <h3 className="font-display">
+                  A website, in your name, by tomorrow morning.
+                </h3>
                 <p>
-                  Tell us about your practice. We draft a clean, AI-generated site under your own brand —
-                  ready to share with prospects and clients.
+                  Tell us about your practice. We draft a clean, AI-generated
+                  site under your own brand — ready to share with prospects and
+                  clients.
                 </p>
                 <div className="doc-chip" style={{ marginTop: 24 }}>
                   <span className="dot" />
@@ -471,12 +606,21 @@ export default function MuneemJiPage() {
                   <span className="step-num">02</span>
                   <span className="h-eyebrow">Collect</span>
                 </div>
-                <h3 className="font-display">Documents arrive where you need them.</h3>
+                <h3 className="font-display">
+                  Documents arrive where you need them.
+                </h3>
                 <p>
-                  Every client gets a private space to upload bank statements, invoices and receipts.
-                  Reminders go out. You stop chasing.
+                  Every client gets a private space to upload bank statements,
+                  invoices and receipts. Reminders go out. You stop chasing.
                 </p>
-                <div style={{ marginTop: 24, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <div
+                  style={{
+                    marginTop: 24,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
                   <span className="doc-chip">Bank statement · Mar</span>
                   <span className="doc-chip">GST invoices</span>
                   <span className="doc-chip">Petty cash</span>
@@ -488,10 +632,12 @@ export default function MuneemJiPage() {
                   <span className="step-num">03</span>
                   <span className="h-eyebrow">Export</span>
                 </div>
-                <h3 className="font-display">A double-entry day book, on the first of the month.</h3>
+                <h3 className="font-display">
+                  A double-entry day book, on the first of the month.
+                </h3>
                 <p>
-                  Out comes a clean day book — debit and credit, line by line — ready to import into
-                  whichever ledger your firm keeps.
+                  Out comes a clean day book — debit and credit, line by line —
+                  ready to import into whichever ledger your firm keeps.
                 </p>
                 <div
                   className="ledger"
@@ -504,37 +650,82 @@ export default function MuneemJiPage() {
                   }}
                 >
                   <div className="row head">
-                    <span>Date</span><span>Particulars</span><span className="num">Dr</span><span className="num">Cr</span>
+                    <span>Date</span>
+                    <span>Particulars</span>
+                    <span className="num">Dr</span>
+                    <span className="num">Cr</span>
                   </div>
                   <div className="row">
-                    <span>03 Apr</span><span>HDFC · Inward</span><span className="num">42,500</span><span className="num">—</span>
+                    <span>03 Apr</span>
+                    <span>HDFC · Inward</span>
+                    <span className="num">42,500</span>
+                    <span className="num">—</span>
                   </div>
                   <div className="row">
-                    <span>03 Apr</span><span>Sales · Invoice 218</span><span className="num">—</span><span className="num">42,500</span>
+                    <span>03 Apr</span>
+                    <span>Sales · Invoice 218</span>
+                    <span className="num">—</span>
+                    <span className="num">42,500</span>
                   </div>
                   <div className="row" style={{ borderBottom: "none" }}>
-                    <span>04 Apr</span><span>Office rent</span><span className="num">—</span><span className="num">28,000</span>
+                    <span>04 Apr</span>
+                    <span>Office rent</span>
+                    <span className="num">—</span>
+                    <span className="num">28,000</span>
                   </div>
                 </div>
               </div>
             </div>
 
             <div className="cta-strip reveal">
-              <p className="font-display" style={{ fontSize: 28, lineHeight: 1.2, maxWidth: "40ch", fontWeight: 400 }}>
+              <p
+                className="font-display"
+                style={{
+                  fontSize: 28,
+                  lineHeight: 1.2,
+                  maxWidth: "40ch",
+                  fontWeight: 400,
+                }}
+              >
                 Built for practising CAs in India, Canada and Ireland.
               </p>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
                 <a
                   href="/register"
                   className="btn-primary"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 3, fontSize: 14, fontWeight: 500, textDecoration: "none" }}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "12px 20px",
+                    borderRadius: 3,
+                    fontSize: 14,
+                    fontWeight: 500,
+                    textDecoration: "none",
+                  }}
                 >
                   Start your practice site <span aria-hidden>→</span>
                 </a>
                 <a
                   href="#"
                   className="btn-ghost"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 3, fontSize: 14, fontWeight: 500, textDecoration: "none" }}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "12px 20px",
+                    borderRadius: 3,
+                    fontSize: 14,
+                    fontWeight: 500,
+                    textDecoration: "none",
+                  }}
                 >
                   Book a 15-min walk-through
                 </a>
@@ -545,11 +736,22 @@ export default function MuneemJiPage() {
 
         {/* TRUST */}
         <section className="bordered">
-          <div className="container-x" style={{ paddingTop: 80, paddingBottom: 80 }}>
+          <div
+            className="container-x"
+            style={{ paddingTop: 80, paddingBottom: 80 }}
+          >
             <div className="grid12" style={{ alignItems: "flex-start" }}>
               <div className="col-4 reveal">
                 <div className="h-eyebrow">Why CAs choose us</div>
-                <h3 className="font-display" style={{ marginTop: 12, fontSize: 34, lineHeight: 1.1, fontWeight: 400 }}>
+                <h3
+                  className="font-display"
+                  style={{
+                    marginTop: 12,
+                    fontSize: 34,
+                    lineHeight: 1.1,
+                    fontWeight: 400,
+                  }}
+                >
                   Refined by the firms that use it daily.
                 </h3>
               </div>
@@ -557,20 +759,46 @@ export default function MuneemJiPage() {
                 <div className="stats-grid">
                   <div className="stat">
                     <div className="font-display num-big">40h</div>
-                    <p style={{ marginTop: 12, fontSize: 13.5, lineHeight: 1.55, color: "var(--muted)" }}>
-                      average time saved per practice, per month — collecting documents instead of chasing them.
+                    <p
+                      style={{
+                        marginTop: 12,
+                        fontSize: 13.5,
+                        lineHeight: 1.55,
+                        color: "var(--muted)",
+                      }}
+                    >
+                      average time saved per practice, per month — collecting
+                      documents instead of chasing them.
                     </p>
                   </div>
                   <div className="stat">
                     <div className="font-display num-big">3 in 1</div>
-                    <p style={{ marginTop: 12, fontSize: 13.5, lineHeight: 1.55, color: "var(--muted)" }}>
-                      a website, a client portal, and a day book — under one practice, one login.
+                    <p
+                      style={{
+                        marginTop: 12,
+                        fontSize: 13.5,
+                        lineHeight: 1.55,
+                        color: "var(--muted)",
+                      }}
+                    >
+                      a website, a client portal, and a day book — under one
+                      practice, one login.
                     </p>
                   </div>
                   <div className="stat">
-                    <div className="font-display num-big">0&nbsp;learn-curve</div>
-                    <p style={{ marginTop: 12, fontSize: 13.5, lineHeight: 1.55, color: "var(--muted)" }}>
-                      no migration, no Tally retraining. Sits beside your existing books.
+                    <div className="font-display num-big">
+                      0&nbsp;learn-curve
+                    </div>
+                    <p
+                      style={{
+                        marginTop: 12,
+                        fontSize: 13.5,
+                        lineHeight: 1.55,
+                        color: "var(--muted)",
+                      }}
+                    >
+                      no migration, no Tally retraining. Sits beside your
+                      existing books.
                     </p>
                   </div>
                 </div>
@@ -578,10 +806,16 @@ export default function MuneemJiPage() {
             </div>
 
             <div className="trust-strip reveal">
-              <div className="trust-row">In quiet use by independent practices in</div>
+              <div className="trust-row">
+                In quiet use by independent practices in
+              </div>
               <div className="cities trust-row">
-                <span>Mumbai</span><span>Bengaluru</span><span>Delhi NCR</span>
-                <span>Toronto</span><span>Dublin</span><span>Ahmedabad</span>
+                <span>Mumbai</span>
+                <span>Bengaluru</span>
+                <span>Delhi NCR</span>
+                <span>Toronto</span>
+                <span>Dublin</span>
+                <span>Ahmedabad</span>
               </div>
             </div>
           </div>
@@ -598,78 +832,213 @@ export default function MuneemJiPage() {
 
             <div className="grid12" style={{ alignItems: "stretch" }}>
               <div className="col-7 reveal">
-                <h2 className="font-display h-section" style={{ maxWidth: "20ch", fontWeight: 400 }}>
+                <h2
+                  className="font-display h-section"
+                  style={{ maxWidth: "20ch", fontWeight: 400 }}
+                >
                   No CA yet?{" "}
-                  <span className="font-display-wonk italic text-crimson">Get your documents in order</span> first.
+                  <span className="font-display-wonk italic text-crimson">
+                    Get your documents in order
+                  </span>{" "}
+                  first.
                 </h2>
-                <p style={{ marginTop: 24, fontSize: 17, lineHeight: 1.65, maxWidth: "58ch", color: "var(--ink-2)" }}>
-                  A private vault for your bank statements, invoices and receipts —
-                  so when you do find the right Chartered Accountant, you hand them
-                  a tidy stack on day one, not a shoebox.
+                <p
+                  style={{
+                    marginTop: 24,
+                    fontSize: 17,
+                    lineHeight: 1.65,
+                    maxWidth: "58ch",
+                    color: "var(--ink-2)",
+                  }}
+                >
+                  A private vault for your bank statements, invoices and
+                  receipts — so when you do find the right Chartered Accountant,
+                  you hand them a tidy stack on day one, not a shoebox.
                 </p>
 
-                <div id="find-ca" style={{ marginTop: 32, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+                <div
+                  id="find-ca"
+                  style={{
+                    marginTop: 32,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
                   <a
                     href="#"
                     className="btn-primary"
-                    style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 3, fontSize: 14, fontWeight: 500, textDecoration: "none" }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "12px 20px",
+                      borderRadius: 3,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      textDecoration: "none",
+                    }}
                   >
                     Find a CA on Muneem Ji <span aria-hidden>→</span>
                   </a>
                   <a
-                    href="#"
+                    href="/owner/signup"
                     className="pill"
-                    style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 3, fontSize: 14, fontWeight: 500, textDecoration: "none", color: "var(--ink)" }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "12px 20px",
+                      borderRadius: 3,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      textDecoration: "none",
+                      color: "var(--ink)",
+                    }}
                   >
                     Start a vault on your own
                   </a>
                 </div>
 
-                <p style={{ marginTop: 24, fontSize: 12.5, color: "var(--muted)", maxWidth: "52ch" }}>
-                  Already working with someone? Invite them — Muneem Ji works the same whether
-                  your accountant is on the platform or not.
+                <p
+                  style={{
+                    marginTop: 24,
+                    fontSize: 12.5,
+                    color: "var(--muted)",
+                    maxWidth: "52ch",
+                  }}
+                >
+                  Already working with someone? Invite them — Muneem Ji works
+                  the same whether your accountant is on the platform or not.
                 </p>
               </div>
 
               <aside className="col-5 reveal">
                 <div className="ba-card">
                   <div>
-                    <div className="h-eyebrow" style={{ color: "#C9BFAE" }}>Independent plan</div>
-                    <div style={{ marginTop: 24, display: "flex", alignItems: "baseline", gap: 8 }}>
-                      <span className="font-display" style={{ fontSize: 64, lineHeight: 1, fontWeight: 400 }}>₹199</span>
-                      <span style={{ fontSize: 13.5, color: "#C9BFAE" }}>/ month</span>
+                    <div className="h-eyebrow" style={{ color: "#C9BFAE" }}>
+                      Independent plan
                     </div>
-                    <p style={{ marginTop: 16, fontSize: 14, lineHeight: 1.6, color: "#D9D0C0" }}>
-                      For business owners who want to organise their documents before — or instead of —
-                      hiring a CA.
+                    <div
+                      style={{
+                        marginTop: 24,
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 8,
+                      }}
+                    >
+                      <span
+                        className="font-display"
+                        style={{ fontSize: 64, lineHeight: 1, fontWeight: 400 }}
+                      >
+                        ₹199
+                      </span>
+                      <span style={{ fontSize: 13.5, color: "#C9BFAE" }}>
+                        / month
+                      </span>
+                    </div>
+                    <p
+                      style={{
+                        marginTop: 16,
+                        fontSize: 14,
+                        lineHeight: 1.6,
+                        color: "#D9D0C0",
+                      }}
+                    >
+                      For business owners who want to organise their documents
+                      before — or instead of — hiring a CA.
                     </p>
 
-                    <ul style={{ listStyle: "none", padding: 0, margin: "28px 0 0", display: "flex", flexDirection: "column", gap: 12, fontSize: 13.5, color: "#E9E1D2" }}>
+                    <ul
+                      style={{
+                        listStyle: "none",
+                        padding: 0,
+                        margin: "28px 0 0",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                        fontSize: 13.5,
+                        color: "#E9E1D2",
+                      }}
+                    >
                       {[
                         "Private document vault",
                         "Bank-statement & invoice intake",
                         "One-click hand-off to any CA",
                       ].map((t) => (
-                        <li key={t} style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                          <span style={{ marginTop: 7, width: 6, height: 6, background: "var(--crimson-soft)", borderRadius: 999, flexShrink: 0 }} />
+                        <li
+                          key={t}
+                          style={{
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 12,
+                          }}
+                        >
+                          <span
+                            style={{
+                              marginTop: 7,
+                              width: 6,
+                              height: 6,
+                              background: "var(--crimson-soft)",
+                              borderRadius: 999,
+                              flexShrink: 0,
+                            }}
+                          />
                           {t}
                         </li>
                       ))}
                     </ul>
                   </div>
 
-                  <div style={{ marginTop: 32, paddingTop: 24, borderTop: "1px solid rgba(255,255,255,0.12)" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+                  <div
+                    style={{
+                      marginTop: 32,
+                      paddingTop: 24,
+                      borderTop: "1px solid rgba(255,255,255,0.12)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "baseline",
+                        justifyContent: "space-between",
+                        gap: 12,
+                      }}
+                    >
                       <div>
-                        <div className="h-eyebrow" style={{ color: "#C9BFAE" }}>When you link a CA</div>
-                        <div className="font-display" style={{ fontSize: 36, lineHeight: 1, marginTop: 8, fontWeight: 400, color: "#FBF7F0" }}>
-                          It drops to <span className="font-display-wonk italic" style={{ color: "#E89A9A" }}>zero.</span>
+                        <div className="h-eyebrow" style={{ color: "#C9BFAE" }}>
+                          When you link a CA
+                        </div>
+                        <div
+                          className="font-display"
+                          style={{
+                            fontSize: 36,
+                            lineHeight: 1,
+                            marginTop: 8,
+                            fontWeight: 400,
+                            color: "#FBF7F0",
+                          }}
+                        >
+                          It drops to{" "}
+                          <span
+                            className="font-display-wonk italic"
+                            style={{ color: "#E89A9A" }}
+                          >
+                            zero.
+                          </span>
                         </div>
                       </div>
                     </div>
-                    <p style={{ marginTop: 12, fontSize: 12.5, color: "#B9AE9C" }}>
-                      Connect any CA already on Muneem Ji and your subscription is on the house —
-                      they take it from there.
+                    <p
+                      style={{
+                        marginTop: 12,
+                        fontSize: 12.5,
+                        color: "#B9AE9C",
+                      }}
+                    >
+                      Connect any CA already on Muneem Ji and your subscription
+                      is on the house — they take it from there.
                     </p>
                   </div>
                 </div>
@@ -682,13 +1051,34 @@ export default function MuneemJiPage() {
         <section>
           <div className="container-x closing">
             <div className="reveal">
-              <p className="h-eyebrow" style={{ marginBottom: 24 }}>A small note from us</p>
-              <p className="font-display" style={{ fontSize: 40, lineHeight: 1.15, maxWidth: "26ch", margin: "0 auto", fontWeight: 400 }}>
-                &ldquo;Muneem Ji&rdquo; means{" "}
-                <span className="font-display-wonk italic text-crimson">the accountant</span> —
-                the trusted one, the one who knows where everything is.
+              <p className="h-eyebrow" style={{ marginBottom: 24 }}>
+                A small note from us
               </p>
-              <p style={{ marginTop: 24, fontSize: 13.5, color: "var(--muted)", maxWidth: "44ch", margin: "24px auto 0" }}>
+              <p
+                className="font-display"
+                style={{
+                  fontSize: 40,
+                  lineHeight: 1.15,
+                  maxWidth: "26ch",
+                  margin: "0 auto",
+                  fontWeight: 400,
+                }}
+              >
+                &ldquo;Muneem Ji&rdquo; means{" "}
+                <span className="font-display-wonk italic text-crimson">
+                  the accountant
+                </span>{" "}
+                — the trusted one, the one who knows where everything is.
+              </p>
+              <p
+                style={{
+                  marginTop: 24,
+                  fontSize: 13.5,
+                  color: "var(--muted)",
+                  maxWidth: "44ch",
+                  margin: "24px auto 0",
+                }}
+              >
                 We named the product after the people we built it for.
               </p>
             </div>
@@ -705,44 +1095,103 @@ export default function MuneemJiPage() {
                 <span className="glyph" />
                 <span className="font-display nav-brand-text">Muneem Ji</span>
               </a>
-              <p style={{ marginTop: 16, fontSize: 13.5, color: "var(--muted)", maxWidth: "36ch" }}>
-                A practice operating system for Chartered Accountants — and the businesses they keep tidy.
+              <p
+                style={{
+                  marginTop: 16,
+                  fontSize: 13.5,
+                  color: "var(--muted)",
+                  maxWidth: "36ch",
+                }}
+              >
+                A practice operating system for Chartered Accountants — and the
+                businesses they keep tidy.
               </p>
             </div>
 
             <div className="col-3">
-              <div className="h-eyebrow" style={{ marginBottom: 16 }}>For CAs</div>
+              <div className="h-eyebrow" style={{ marginBottom: 16 }}>
+                For CAs
+              </div>
               <ul>
-                <li><a href="#" className="flink ulink">Practice website</a></li>
-                <li><a href="#" className="flink ulink">Document intake</a></li>
-                <li><a href="#" className="flink ulink">Day-book export</a></li>
-                <li><a href="#" className="flink ulink">Pricing</a></li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Practice website
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Document intake
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Day-book export
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Pricing
+                  </a>
+                </li>
               </ul>
             </div>
 
             <div className="col-2">
-              <div className="h-eyebrow" style={{ marginBottom: 16 }}>For owners</div>
+              <div className="h-eyebrow" style={{ marginBottom: 16 }}>
+                For owners
+              </div>
               <ul>
-                <li><a href="#" className="flink ulink">Find a CA</a></li>
-                <li><a href="#" className="flink ulink">Document vault</a></li>
-                <li><a href="#" className="flink ulink">How hand-off works</a></li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Find a CA
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Document vault
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    How hand-off works
+                  </a>
+                </li>
               </ul>
             </div>
 
             <div className="col-2">
-              <div className="h-eyebrow" style={{ marginBottom: 16 }}>Company</div>
+              <div className="h-eyebrow" style={{ marginBottom: 16 }}>
+                Company
+              </div>
               <ul>
-                <li><a href="#" className="flink ulink">About</a></li>
-                <li><a href="#" className="flink ulink">Contact</a></li>
-                <li><a href="#" className="flink ulink">Privacy</a></li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    About
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Contact
+                  </a>
+                </li>
+                <li>
+                  <a href="#" className="flink ulink">
+                    Privacy
+                  </a>
+                </li>
               </ul>
             </div>
           </div>
 
           <div className="bottom">
-            <div className="trust-row" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span>India</span><span className="hairline" style={{ width: 24 }} />
-              <span>Canada</span><span className="hairline" style={{ width: 24 }} />
+            <div
+              className="trust-row"
+              style={{ display: "flex", alignItems: "center", gap: 12 }}
+            >
+              <span>India</span>
+              <span className="hairline" style={{ width: 24 }} />
+              <span>Canada</span>
+              <span className="hairline" style={{ width: 24 }} />
               <span>Ireland</span>
             </div>
             <div style={{ fontSize: 12, color: "var(--muted)" }}>

@@ -290,7 +290,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
               clientOrgId: clientUsers.clientOrgId,
             })
             .from(clientUsers)
-            .where(eq(clientUsers.email, credentials.email as string))
+            .where(
+              eq(
+                clientUsers.email,
+                (credentials.email as string).trim().toLowerCase(),
+              ),
+            )
             .limit(1)
             .then((rows) => rows[0]);
           if (!row) return null;

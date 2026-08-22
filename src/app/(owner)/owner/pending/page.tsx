@@ -1,11 +1,12 @@
-import { and, asc, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { bankTransactions } from '@/db/schema/muneem';
-import { requireOwnerSession } from '@/lib/auth/tenant';
-import { formatINR, formatDateIN } from '@/lib/format/inr';
+import { and, asc, eq } from "drizzle-orm";
+import { db } from "@/db";
+import { bankTransactions } from "@/db/schema/muneem";
+import { getOwnerSession } from "@/lib/auth/tenant";
+import { formatINR, formatDateIN } from "@/lib/format/inr";
 
 export default async function OwnerPendingPage() {
-  const session = await requireOwnerSession();
+  const session = await getOwnerSession();
+  if (!session) return null;
 
   const txs = await db
     .select()
@@ -13,7 +14,7 @@ export default async function OwnerPendingPage() {
     .where(
       and(
         eq(bankTransactions.clientOrgId, session.clientOrgId),
-        eq(bankTransactions.matchStatus, 'unmatched'),
+        eq(bankTransactions.matchStatus, "unmatched"),
       ),
     )
     .orderBy(asc(bankTransactions.transactionDate));
@@ -21,10 +22,12 @@ export default async function OwnerPendingPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-neutral-900">Pending items</h2>
+        <h2 className="text-2xl font-semibold text-neutral-900">
+          Pending items
+        </h2>
         <p className="mt-1 text-sm text-neutral-500">
-          Transactions we found on your statement that don&apos;t have a matching invoice yet.
-          Upload an invoice for these in the next step.
+          Transactions we found on your statement that don&apos;t have a
+          matching invoice yet. Upload an invoice for these in the next step.
         </p>
       </div>
 
@@ -48,10 +51,12 @@ export default async function OwnerPendingPage() {
                   <td className="px-6 py-2 whitespace-nowrap text-neutral-700">
                     {formatDateIN(t.transactionDate)}
                   </td>
-                  <td className="px-6 py-2 text-neutral-900">{t.description}</td>
+                  <td className="px-6 py-2 text-neutral-900">
+                    {t.description}
+                  </td>
                   <td
                     className={`px-6 py-2 text-right font-medium whitespace-nowrap ${
-                      t.amountMinor < 0n ? 'text-red-600' : 'text-green-700'
+                      t.amountMinor < 0n ? "text-red-600" : "text-green-700"
                     }`}
                   >
                     {formatINR(t.amountMinor)}

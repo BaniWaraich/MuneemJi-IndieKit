@@ -22,7 +22,9 @@ import {
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { z } from "zod";
 import { users } from "./user"; // Indie Kit's app_user table (CA staff are app_users)
+import { onboardingProgressSchema } from "@/lib/validations/onboarding-progress.schema";
 
 // ---------------------------------------------------------------------------
 // Firms & Users
@@ -96,6 +98,10 @@ export const clientUsers = pgTable("client_users", {
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
   passwordHash: text("password_hash").notNull(),
+  onboardingProgress: jsonb("onboarding_progress")
+    .$type<z.infer<typeof onboardingProgressSchema>>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -646,4 +652,44 @@ export const transactionCategoryCorrections = pgTable(
       .default(false),
     promotedAt: timestamp("promoted_at", { withTimezone: true }),
   },
+);
+
+// ---------------------------------------------------------------------------
+// F09 — Gmail Connect (linked BO, one account)
+// ---------------------------------------------------------------------------
+
+export const GMAIL_CONNECTION_STATUSES = [
+  "active",
+  "needs_reauth",
+  "revoked",
+] as const;
+
+export const gmailConnections = pgTable(
+  "gmail_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => clientUsers.id, { onDelete: "cascade" })
+      .unique(),
+    gmailAddress: text("gmail_address").notNull(),
+    accessToken: text("access_token").notNull(),
+    refreshToken: text("refresh_token").notNull(),
+    tokenExpiry: timestamp("token_expiry", { withTimezone: true }).notNull(),
+    scopes: text("scopes").notNull(),
+    status: text("status", { enum: GMAIL_CONNECTION_STATUSES })
+      .notNull()
+      .default("active"),
+    connectedAt: timestamp("connected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("gmail_connections_status_idx").on(table.status)],
 );
