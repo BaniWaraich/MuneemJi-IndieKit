@@ -18,10 +18,13 @@ import {
   jsonb,
   unique,
   uniqueIndex,
+  index,
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { z } from "zod";
 import { users } from "./user"; // Indie Kit's app_user table (CA staff are app_users)
+import { onboardingProgressSchema } from "@/lib/validations/onboarding-progress.schema";
 
 // ---------------------------------------------------------------------------
 // Firms & Users
@@ -95,6 +98,10 @@ export const clientUsers = pgTable("client_users", {
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
   passwordHash: text("password_hash").notNull(),
+  onboardingProgress: jsonb("onboarding_progress")
+    .$type<z.infer<typeof onboardingProgressSchema>>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -332,32 +339,53 @@ export const statementParseLog = pgTable("statement_parse_log", {
 // Documents (invoices / receipts) — D05 OCR input
 // ---------------------------------------------------------------------------
 
-export const documents = pgTable("documents", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  clientOrgId: uuid("client_org_id")
-    .notNull()
-    .references(() => clientOrgs.id),
-  submittedByClient: uuid("submitted_by_client").references(
-    () => clientUsers.id,
-  ),
-  submittedByGuest: uuid("submitted_by_guest").references(() => guestTokens.id),
-  s3Key: text("s3_key").notNull(),
-  filename: text("filename").notNull(),
-  fileType: text("file_type", { enum: ["pdf", "image"] }).notNull(),
-  scanStatus: text("scan_status", {
-    enum: ["pending", "clean", "infected", "error"],
-  })
-    .notNull()
-    .default("pending"),
-  ocrStatus: text("ocr_status", {
-    enum: ["pending", "complete", "needs_review", "failed"],
-  })
-    .notNull()
-    .default("pending"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const documents = pgTable(
+  "documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientOrgId: uuid("client_org_id")
+      .notNull()
+      .references(() => clientOrgs.id),
+    submittedByUser: text("submitted_by_user").references(() => users.id),
+    submittedByClient: uuid("submitted_by_client").references(
+      () => clientUsers.id,
+    ),
+    submittedByGuest: uuid("submitted_by_guest").references(
+      () => guestTokens.id,
+    ),
+    s3Key: text("s3_key").notNull(),
+    filename: text("filename").notNull(),
+    fileType: text("file_type", { enum: ["pdf", "image"] }).notNull(),
+    fileSizeBytes: bigint("file_size_bytes", { mode: "bigint" }),
+    scanStatus: text("scan_status", {
+      enum: ["pending", "clean", "infected", "error"],
+    })
+      .notNull()
+      .default("pending"),
+    ocrStatus: text("ocr_status", {
+      enum: ["pending", "complete", "needs_review", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "documents_submitted_by_one_party",
+      sql`(
+        (${table.submittedByUser} IS NOT NULL)::int +
+        (${table.submittedByClient} IS NOT NULL)::int +
+        (${table.submittedByGuest} IS NOT NULL)::int
+      ) = 1`,
+    ),
+    index("documents_client_org_id_idx").on(table.clientOrgId),
+    index("documents_created_at_idx").on(table.createdAt),
+    index("documents_submitted_by_user_idx").on(table.submittedByUser),
+    index("documents_submitted_by_client_idx").on(table.submittedByClient),
+  ],
+);
 
 export const documentExtractions = pgTable("document_extractions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -624,4 +652,44 @@ export const transactionCategoryCorrections = pgTable(
       .default(false),
     promotedAt: timestamp("promoted_at", { withTimezone: true }),
   },
+);
+
+// ---------------------------------------------------------------------------
+// F09 — Gmail Connect (linked BO, one account)
+// ---------------------------------------------------------------------------
+
+export const GMAIL_CONNECTION_STATUSES = [
+  "active",
+  "needs_reauth",
+  "revoked",
+] as const;
+
+export const gmailConnections = pgTable(
+  "gmail_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => clientUsers.id, { onDelete: "cascade" })
+      .unique(),
+    gmailAddress: text("gmail_address").notNull(),
+    accessToken: text("access_token").notNull(),
+    refreshToken: text("refresh_token").notNull(),
+    tokenExpiry: timestamp("token_expiry", { withTimezone: true }).notNull(),
+    scopes: text("scopes").notNull(),
+    status: text("status", { enum: GMAIL_CONNECTION_STATUSES })
+      .notNull()
+      .default("active"),
+    connectedAt: timestamp("connected_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("gmail_connections_status_idx").on(table.status)],
 );

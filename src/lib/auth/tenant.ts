@@ -72,9 +72,27 @@ export async function requireOwnerSession(): Promise<OwnerSession> {
   };
 }
 
+/** Non-throwing read for owner pages. Layout is responsible for redirecting. */
+export async function getOwnerSession(): Promise<OwnerSession | null> {
+  const session = await auth();
+  if (
+    !session?.user?.email ||
+    !session.user.id ||
+    session.user.role !== "business_owner" ||
+    !session.user.firmId
+  ) {
+    return null;
+  }
+  return {
+    ownerId: session.user.id,
+    clientOrgId: session.user.firmId,
+    email: session.user.email,
+  };
+}
+
 export async function assertFirmOwnsClient(
   firmId: string,
-  clientOrgId: string
+  clientOrgId: string,
 ): Promise<void> {
   const row = await db.query.clientOrgs.findFirst({
     where: and(eq(clientOrgs.id, clientOrgId), eq(clientOrgs.firmId, firmId)),
@@ -84,7 +102,7 @@ export async function assertFirmOwnsClient(
 
 export function assertOwnerInOrg(
   session: OwnerSession,
-  clientOrgId: string
+  clientOrgId: string,
 ): void {
   if (session.clientOrgId !== clientOrgId) throw new ForbiddenError();
 }
@@ -94,7 +112,7 @@ export type FirmOrOwnerAccess =
   | { kind: "owner"; session: OwnerSession };
 
 export async function requireFirmOrOwnerForClient(
-  clientOrgId: string
+  clientOrgId: string,
 ): Promise<FirmOrOwnerAccess> {
   const session = await auth();
   if (!session?.user?.email || !session.user.id) throw new UnauthorizedError();

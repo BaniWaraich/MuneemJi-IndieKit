@@ -35,6 +35,7 @@ const nextConfig: NextConfig = {
   experimental: {
     authInterrupts: true,
   },
+  serverExternalPackages: ["google-auth-library"],
 };
 
 const withMDX = createMDX();

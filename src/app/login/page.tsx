@@ -150,7 +150,11 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [errors, setErrors] = useState<{ email?: string; password?: string; global?: string }>({});
+  const [errors, setErrors] = useState<{
+    email?: string;
+    password?: string;
+    global?: string;
+  }>({});
   const [loading, setLoading] = useState(false);
 
   function validate() {
@@ -164,11 +168,18 @@ export default function LoginPage() {
   async function handleSubmit(ev: React.FormEvent) {
     ev.preventDefault();
     const e = validate();
-    if (Object.keys(e).length) { setErrors(e); return; }
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
+    }
     setErrors({});
     setLoading(true);
     try {
-      const res = await signIn("credentials", { email, password, redirect: false });
+      const res = await signIn("credentials", {
+        email,
+        password,
+        redirect: false,
+      });
       if (res?.error) {
         setErrors({ global: "Invalid email or password" });
       } else {
@@ -204,7 +215,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
                 value={email}
-                onChange={e => setEmail(e.target.value)}
+                onChange={(e) => setEmail(e.target.value)}
                 className={errors.email ? "err" : ""}
                 placeholder="you@yourfirm.com"
               />
@@ -218,11 +229,13 @@ export default function LoginPage() {
                 type="password"
                 autoComplete="current-password"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onChange={(e) => setPassword(e.target.value)}
                 className={errors.password ? "err" : ""}
                 placeholder="••••••••"
               />
-              {errors.password && <p className="field-error">{errors.password}</p>}
+              {errors.password && (
+                <p className="field-error">{errors.password}</p>
+              )}
             </div>
 
             <button type="submit" className="btn-primary" disabled={loading}>
@@ -238,8 +251,9 @@ export default function LoginPage() {
               <Link href="/register">Create a CA account</Link>
             </span>
             <span>
-              Business owner?{" "}
-              <Link href="/owner/login">Sign in here</Link>
+              Business owner? <Link href="/owner/login">Sign in</Link>
+              {" · "}
+              <Link href="/owner/signup">Create an account</Link>
             </span>
           </div>
         </div>

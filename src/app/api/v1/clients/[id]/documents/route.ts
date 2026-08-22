@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
-import crypto from "crypto";
-import { count, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { bankStatements, clientOrgs } from "@/db/schema/muneem";
+import { clientOrgs, documents } from "@/db/schema/muneem";
 import {
   requireFirmOrOwnerForClient,
   UnauthorizedError,
@@ -11,21 +9,15 @@ import {
 } from "@/lib/auth/tenant";
 import { presignPut } from "@/lib/muneem-storage/presign";
 import {
+  documentS3Key,
+  fileTypeFromContentType,
+  isAllowedDocumentContentType,
+} from "@/lib/muneem-storage/document-upload";
+import {
   getFirmStorageBytes,
   MAX_FIRM_STORAGE_BYTES,
 } from "@/lib/muneem-storage/firm-storage";
-
-const MAX_STATEMENTS_PER_CLIENT = 50;
-
-const schema = z.object({
-  filename: z.string().min(1).max(255),
-  contentType: z.string().min(1).max(127),
-  fileSizeBytes: z
-    .number()
-    .int()
-    .positive()
-    .max(25 * 1024 * 1024), // 25 MB hard limit
-});
+import { createDocumentSchema } from "@/lib/validations/documents.schema";
 
 export async function POST(
   request: Request,
@@ -36,7 +28,7 @@ export async function POST(
     const access = await requireFirmOrOwnerForClient(id);
 
     const body = await request.json();
-    const result = schema.safeParse(body);
+    const result = createDocumentSchema.safeParse(body);
     if (!result.success) {
       return NextResponse.json(
         { error: "Invalid input", details: result.error.flatten() },
@@ -44,28 +36,19 @@ export async function POST(
       );
     }
 
-    // Resolve firm ID for storage cap check.
+    if (!isAllowedDocumentContentType(result.data.contentType)) {
+      return NextResponse.json(
+        { error: "UNSUPPORTED_MEDIA_TYPE" },
+        { status: 415 },
+      );
+    }
+
     const clientOrg = await db.query.clientOrgs.findFirst({
       where: eq(clientOrgs.id, id),
-      columns: { firmId: true, currency: true },
+      columns: { firmId: true },
     });
     if (!clientOrg) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
-    }
-
-    // Check per-client statement count cap.
-    const [countRow] = await db
-      .select({ n: count() })
-      .from(bankStatements)
-      .where(eq(bankStatements.clientOrgId, id));
-    if ((countRow?.n ?? 0) >= MAX_STATEMENTS_PER_CLIENT) {
-      return NextResponse.json(
-        {
-          error: "STORAGE_LIMIT_EXCEEDED",
-          detail: "Client has reached the 50-statement limit.",
-        },
-        { status: 402 },
-      );
     }
 
     const firmStorageBytes = await getFirmStorageBytes(clientOrg.firmId);
@@ -82,27 +65,28 @@ export async function POST(
       );
     }
 
-    const s3Key = `statements/${id}/${Date.now()}-${crypto.randomBytes(8).toString("hex")}-${result.data.filename}`;
+    const s3Key = documentS3Key(id, result.data.filename);
     const uploadUrl = await presignPut(s3Key, result.data.contentType, 900);
 
     const [row] = await db
-      .insert(bankStatements)
+      .insert(documents)
       .values({
         clientOrgId: id,
-        uploadedByUser: access.kind === "firm" ? access.session.userId : null,
-        uploadedByClient:
+        submittedByUser: access.kind === "firm" ? access.session.userId : null,
+        submittedByClient:
           access.kind === "owner" ? access.session.ownerId : null,
+        submittedByGuest: null,
         s3Key,
         filename: result.data.filename,
+        fileType: fileTypeFromContentType(result.data.contentType),
         fileSizeBytes: BigInt(result.data.fileSizeBytes),
-        currency: clientOrg.currency,
-        status: "processing",
         scanStatus: "pending",
+        ocrStatus: "pending",
       })
-      .returning({ id: bankStatements.id });
+      .returning({ id: documents.id });
 
     return NextResponse.json(
-      { statementId: row.id, uploadUrl, s3Key },
+      { documentId: row.id, uploadUrl, s3Key },
       { status: 200 },
     );
   } catch (e) {
@@ -126,19 +110,30 @@ export async function GET(
 
     const rows = await db
       .select({
-        id: bankStatements.id,
-        filename: bankStatements.filename,
-        status: bankStatements.status,
-        periodStart: bankStatements.periodStart,
-        periodEnd: bankStatements.periodEnd,
-        currency: bankStatements.currency,
-        createdAt: bankStatements.createdAt,
+        id: documents.id,
+        filename: documents.filename,
+        fileType: documents.fileType,
+        fileSizeBytes: documents.fileSizeBytes,
+        scanStatus: documents.scanStatus,
+        ocrStatus: documents.ocrStatus,
+        createdAt: documents.createdAt,
       })
-      .from(bankStatements)
-      .where(eq(bankStatements.clientOrgId, id))
-      .orderBy(desc(bankStatements.createdAt));
+      .from(documents)
+      .where(eq(documents.clientOrgId, id))
+      .orderBy(desc(documents.createdAt));
 
-    return NextResponse.json({ statements: rows });
+    return NextResponse.json({
+      documents: rows.map((r) => ({
+        id: r.id,
+        filename: r.filename,
+        fileType: r.fileType,
+        fileSizeBytes:
+          r.fileSizeBytes === null ? null : Number(r.fileSizeBytes),
+        scanStatus: r.scanStatus,
+        ocrStatus: r.ocrStatus,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    });
   } catch (e) {
     if (e instanceof UnauthorizedError) {
       return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });

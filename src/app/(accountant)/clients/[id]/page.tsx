@@ -8,10 +8,12 @@ import {
   clientContacts,
   bankStatements,
   clientProfiles,
+  documents,
 } from "@/db/schema/muneem";
 import { auth } from "@/auth";
 import { ContactsPanel } from "./contacts-panel";
 import { StatementsPanel } from "./statements-panel";
+import { DocumentsPanel } from "./documents-panel";
 
 export default async function ClientDetailPage({
   params,
@@ -28,7 +30,7 @@ export default async function ClientDetailPage({
     redirect("/login");
   }
 
-  const [client, contacts, statements, profile] = await Promise.all([
+  const [client, contacts, statements, docs, profile] = await Promise.all([
     db.query.clientOrgs.findFirst({
       where: and(
         eq(clientOrgs.id, id),
@@ -49,6 +51,19 @@ export default async function ClientDetailPage({
       .from(bankStatements)
       .where(eq(bankStatements.clientOrgId, id))
       .orderBy(desc(bankStatements.createdAt)),
+    db
+      .select({
+        id: documents.id,
+        filename: documents.filename,
+        fileType: documents.fileType,
+        fileSizeBytes: documents.fileSizeBytes,
+        scanStatus: documents.scanStatus,
+        ocrStatus: documents.ocrStatus,
+        createdAt: documents.createdAt,
+      })
+      .from(documents)
+      .where(eq(documents.clientOrgId, id))
+      .orderBy(desc(documents.createdAt)),
     db.query.clientProfiles.findFirst({
       where: eq(clientProfiles.clientOrgId, id),
       columns: { id: true },
@@ -139,6 +154,20 @@ export default async function ClientDetailPage({
           periodEnd: s.periodEnd,
           currency: s.currency,
           createdAt: s.createdAt.toISOString(),
+        }))}
+      />
+
+      <DocumentsPanel
+        clientOrgId={id}
+        initial={docs.map((d) => ({
+          id: d.id,
+          filename: d.filename,
+          fileType: d.fileType,
+          fileSizeBytes:
+            d.fileSizeBytes === null ? null : Number(d.fileSizeBytes),
+          scanStatus: d.scanStatus,
+          ocrStatus: d.ocrStatus,
+          createdAt: d.createdAt.toISOString(),
         }))}
       />
     </div>
