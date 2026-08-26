@@ -20,6 +20,7 @@ import {
   uniqueIndex,
   index,
   check,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { z } from "zod";
@@ -367,6 +368,9 @@ export const documents = pgTable(
     })
       .notNull()
       .default("pending"),
+    // F10 — which Gmail inbox fetched this file. Null for D04 manual uploads.
+    gmailConnectionId: uuid("gmail_connection_id"),
+    gmailAddress: text("gmail_address"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -384,6 +388,7 @@ export const documents = pgTable(
     index("documents_created_at_idx").on(table.createdAt),
     index("documents_submitted_by_user_idx").on(table.submittedByUser),
     index("documents_submitted_by_client_idx").on(table.submittedByClient),
+    index("documents_gmail_connection_id_idx").on(table.gmailConnectionId),
   ],
 );
 
@@ -692,4 +697,191 @@ export const gmailConnections = pgTable(
       .defaultNow(),
   },
   (table) => [index("gmail_connections_status_idx").on(table.status)],
+);
+
+// ---------------------------------------------------------------------------
+// O05 — Payee memory (BO learning; not O03)
+// ---------------------------------------------------------------------------
+
+export const PAYEE_RELATIONSHIPS = [
+  "vendor",
+  "customer",
+  "family",
+  "employee",
+  "self",
+  "landlord",
+  "unknown",
+] as const;
+
+export const INVOICE_POLICIES = ["always", "never", "ask"] as const;
+
+export const PAYEE_MEMORY_SOURCES = [
+  "clarification",
+  "list_edit",
+  "agent_inferred",
+] as const;
+
+export const payeeMemory = pgTable(
+  "payee_memory",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientOrgId: uuid("client_org_id")
+      .notNull()
+      .references(() => clientOrgs.id),
+    payeeKey: text("payee_key").notNull(),
+    displayName: text("display_name").notNull(),
+    relationship: text("relationship", { enum: PAYEE_RELATIONSHIPS }).notNull(),
+    invoicePolicy: text("invoice_policy", { enum: INVOICE_POLICIES }).notNull(),
+    source: text("source", { enum: PAYEE_MEMORY_SOURCES }).notNull(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("payee_memory_org_key").on(table.clientOrgId, table.payeeKey),
+    index("payee_memory_client_org_id_idx").on(table.clientOrgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// O04 — Invoice checklist
+// ---------------------------------------------------------------------------
+
+export const CHECKLIST_ITEM_STATUSES = [
+  "to_collect",
+  "collected",
+  "not_needed",
+  "awaiting_clarification",
+] as const;
+
+export const CHECKLIST_ITEM_SOURCES = [
+  "high_confidence",
+  "user_confirmed",
+  "clarified",
+] as const;
+
+export const GMAIL_SEARCH_STATUSES = [
+  "not_eligible",
+  "queued",
+  "complete",
+  "skipped_no_gmail",
+  "failed",
+] as const;
+
+export const CLARIFICATION_STATUSES = [
+  "pending",
+  "answered",
+  "skipped",
+] as const;
+
+export const CLARIFICATION_ANSWERS = [
+  "landlord",
+  "supplier",
+  "family",
+  "self",
+  "skip",
+] as const;
+
+export const invoiceChecklistItems = pgTable(
+  "invoice_checklist_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientOrgId: uuid("client_org_id")
+      .notNull()
+      .references(() => clientOrgs.id),
+    statementId: uuid("statement_id")
+      .notNull()
+      .references(() => bankStatements.id),
+    payeeKey: text("payee_key").notNull(),
+    displayName: text("display_name").notNull(),
+    amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
+    currency: char("currency", { length: 3 }).notNull(),
+    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    periodLabel: text("period_label").notNull(),
+    status: text("status", { enum: CHECKLIST_ITEM_STATUSES }).notNull(),
+    source: text("source", { enum: CHECKLIST_ITEM_SOURCES }).notNull(),
+    documentId: uuid("document_id").references(() => documents.id),
+    gmailConnectionId: uuid("gmail_connection_id").references(
+      () => gmailConnections.id,
+    ),
+    gmailSearchStatus: text("gmail_search_status", {
+      enum: GMAIL_SEARCH_STATUSES,
+    })
+      .notNull()
+      .default("not_eligible"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("invoice_checklist_items_statement_payee").on(
+      table.statementId,
+      table.payeeKey,
+    ),
+    index("invoice_checklist_items_client_org_id_idx").on(table.clientOrgId),
+    index("invoice_checklist_items_statement_id_idx").on(table.statementId),
+    index("invoice_checklist_items_status_idx").on(table.status),
+  ],
+);
+
+export const invoiceChecklistItemTxs = pgTable(
+  "invoice_checklist_item_txs",
+  {
+    itemId: uuid("item_id")
+      .notNull()
+      .references(() => invoiceChecklistItems.id, { onDelete: "cascade" }),
+    bankTransactionId: uuid("bank_transaction_id")
+      .notNull()
+      .references(() => bankTransactions.id),
+  },
+  (table) => [
+    primaryKey({
+      name: "invoice_checklist_item_txs_pk",
+      columns: [table.itemId, table.bankTransactionId],
+    }),
+  ],
+);
+
+export const payeeClarifications = pgTable(
+  "payee_clarifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientOrgId: uuid("client_org_id")
+      .notNull()
+      .references(() => clientOrgs.id),
+    statementId: uuid("statement_id")
+      .notNull()
+      .references(() => bankStatements.id),
+    payeeKey: text("payee_key").notNull(),
+    promptText: text("prompt_text").notNull(),
+    sampleAmountsMinor: jsonb("sample_amounts_minor")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    occurrenceCount: integer("occurrence_count").notNull(),
+    status: text("status", { enum: CLARIFICATION_STATUSES })
+      .notNull()
+      .default("pending"),
+    answer: text("answer", { enum: CLARIFICATION_ANSWERS }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("payee_clarifications_statement_payee").on(
+      table.statementId,
+      table.payeeKey,
+    ),
+    index("payee_clarifications_client_org_id_idx").on(table.clientOrgId),
+  ],
 );
