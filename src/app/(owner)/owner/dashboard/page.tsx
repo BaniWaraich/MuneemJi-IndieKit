@@ -1,30 +1,37 @@
 import Link from "next/link";
-import { and, eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { bankTransactions, clientOrgs } from "@/db/schema/muneem";
+import { clientOrgs } from "@/db/schema/muneem";
 import { getOwnerSession } from "@/lib/auth/tenant";
 import { getGmailStatus } from "@/lib/gmail/status";
+import { loadLatestParsedChecklistSummary } from "@/lib/invoice-checklist/load-summary";
 import { GmailIntegrationsCard } from "../_components/gmail-integrations-card";
 
 export default async function OwnerDashboard() {
   const session = await getOwnerSession();
   if (!session) return null;
 
-  const [org, [{ count }], gmailStatus] = await Promise.all([
+  const [org, gmailStatus, checklist] = await Promise.all([
     db.query.clientOrgs.findFirst({
       where: eq(clientOrgs.id, session.clientOrgId),
     }),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(bankTransactions)
-      .where(
-        and(
-          eq(bankTransactions.clientOrgId, session.clientOrgId),
-          eq(bankTransactions.matchStatus, "unmatched"),
-        ),
-      ),
-    getGmailStatus(session.ownerId),
+    getGmailStatus(session.ownerId).catch((err) => {
+      console.error("OwnerDashboard getGmailStatus", err);
+      return {
+        status: "disconnected" as const,
+        gmailAddress: null,
+        connectedAt: null,
+        lastUsedAt: null,
+      };
+    }),
+    loadLatestParsedChecklistSummary(session.clientOrgId),
   ]);
+
+  const { summary, statementId: latestId } = checklist;
+  const gmailOk = gmailStatus.status === "active";
+  const checklistHref = latestId
+    ? `/owner/statements/${latestId}/checklist`
+    : "/owner/statements";
 
   return (
     <div className="flex flex-col gap-6">
@@ -38,58 +45,52 @@ export default async function OwnerDashboard() {
         </p>
       </div>
 
+      {(!gmailOk || !latestId) && (
+        <div className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
+          <h3 className="text-base font-medium text-neutral-900">
+            Get started
+          </h3>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            {!gmailOk && (
+              <Link
+                href="/owner/onboarding#gmail"
+                className="bg-primary hover:bg-primary-hover focus:ring-primary inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-none"
+              >
+                Connect Gmail
+              </Link>
+            )}
+            <Link
+              href="/owner/statements"
+              className="inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
+            >
+              Upload statement
+            </Link>
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">
+            You can upload a statement before connecting Gmail — we&apos;ll just
+            ask you to find a few invoices yourself.
+          </p>
+        </div>
+      )}
+
       <Link
-        href="/owner/pending"
+        href={checklistHref}
         className="block rounded-xl border border-neutral-200 bg-white p-6 shadow-sm transition-colors hover:border-neutral-300"
       >
-        <p className="text-sm text-neutral-500">Pending items</p>
-        <p className="mt-1 text-3xl font-semibold text-neutral-900">{count}</p>
+        <p className="text-sm text-neutral-500">Invoices to collect</p>
+        <p className="mt-1 text-3xl font-semibold text-neutral-900">
+          {summary.toCollect}
+        </p>
         <p className="mt-2 text-xs text-neutral-500">
-          {count === 0
-            ? "Nothing pending — upload a statement to get started."
-            : "Transactions waiting for a matching invoice."}
+          {summary.collected} collected · {summary.findYourself} to find
+          yourself
+          {summary.quickQuestions > 0
+            ? ` · ${summary.quickQuestions} quick questions`
+            : ""}
         </p>
       </Link>
 
       <GmailIntegrationsCard status={gmailStatus} />
-
-      <div className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
-        <h3 className="text-base font-medium text-neutral-900">
-          Getting started
-        </h3>
-        <ul className="mt-3 flex flex-col gap-2 text-sm text-neutral-700">
-          <li>
-            1. Connect Gmail on the{" "}
-            <Link
-              href="/owner/onboarding"
-              className="text-primary hover:text-primary-hover"
-            >
-              Onboarding
-            </Link>{" "}
-            page.
-          </li>
-          <li>
-            2. Upload your bank statement on the{" "}
-            <Link
-              href="/owner/statements"
-              className="text-primary hover:text-primary-hover"
-            >
-              Statements
-            </Link>{" "}
-            page.
-          </li>
-          <li>
-            3. We&apos;ll list any transactions we couldn&apos;t match on the{" "}
-            <Link
-              href="/owner/pending"
-              className="text-primary hover:text-primary-hover"
-            >
-              Pending
-            </Link>{" "}
-            page.
-          </li>
-        </ul>
-      </div>
     </div>
   );
 }

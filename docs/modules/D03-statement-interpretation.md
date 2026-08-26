@@ -3,7 +3,7 @@ id: D03
 name: statement-interpretation
 status: IMPLEMENTED
 owners: [worker, schema]
-last_updated: 2026-06-03
+last_updated: 2026-08-26
 ---
 
 # D03 — Statement Interpretation
@@ -409,6 +409,8 @@ D03 has **no terminal failures from LLM unavailability.** That is policy, not an
 - **D09 — transaction-corrections-feedback** reads `bank_transactions.{category, reasoning, interpretation_method, interpretation_confidence}` to compare against CA overrides.
 - **X01 — day-book-export** reads `bank_transactions` filtered by `category` and join-resolved match status.
 - **X05 — submission-status-bo** reads counts of `flagged` rows to display "transactions needing your attention" to BOs.
+- **O04 — invoice-checklist** consumes `muneem/interpretation.complete` (already emitted on D03 success) to build the BO checklist. D03 does not write checklist rows.
+- **O05 — payee-memory** may be read by the D03 rule pre-filter (optional) so remembered `never` / family / self payees set `needs_invoice=false` at the source. O04 applies O05 even if D03 does not.
 
 **External services:**
 
@@ -451,3 +453,4 @@ D03 has **no terminal failures from LLM unavailability.** That is policy, not an
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | 2026-05-03 | Initial spec; status `SPECCED`. Adds six columns to `bank_transactions` via Drizzle migration. Pins the rule pre-filter (5 rules), the LLM prompt template, the integrity checks (row count + sum), the fallback policy (graceful degrade, never hard-fail on LLM unavailability), the missing-profile policy (loud hard-fail in alpha), and the `match.scan` enqueue. Lifts content from `docs/archive/client-knowledge-schema.md` (which sketched the prompt template) and rescopes to D03-only.                                                                                                                                                                                                 | Bani / Claude |
 | 2026-06-03 | **Fixed statements stuck at `phase1_complete`.** D03 ran all work (incl. a 2×120s LLM call) in one `step.run`; on Vercel Hobby (~60s function cap) LLM-heavy statements were killed mid-step before writing `parsed` _or_ `failed`, so Inngest retried forever. Decomposed into Inngest steps: `prepare` → `classify-chunk-{i}` (one step per ~20-tx batch, single bounded `LLM_TIMEOUT_MS=45s` attempt; per-chunk fallback on retry exhaustion) → `finalize` (re-derives deterministically, sets `parsed`) → `step.sendEvent` for `muneem/interpretation.complete`. Added `onFailure` to mark `failed` when retries exhaust. `classifyResidueWithLlm` replaced by `classifyChunk` + `chunkArray`. | Bani / Claude |
+| 2026-08-26 | O04 consumes `muneem/interpretation.complete`. Optional O05 read in the rule pre-filter. BO UI must not surface D03 reasoning/confidence/category.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Bani / agent  |

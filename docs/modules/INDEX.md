@@ -10,16 +10,17 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 
 ## Foundation (cross-cutting; every module depends on these)
 
-| ID                            | Module                       | Status           | One-liner                                                                                                                                                                       |
-| ----------------------------- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F01                           | auth-sessions                | PLANNED          | NextAuth.js v5 with three session types (CA, linked-BO, independent-BO) + guest tokens; gates every protected route.                                                            |
-| F02                           | tenant-isolation             | PLANNED          | `ca_firm_id` / `client_org_id` scoping helpers + ownership guards used by every API query.                                                                                      |
-| F03                           | file-upload-virus-scan       | DRAFT — deferred | Virus scanning deferred (Railway/ClamAV removed; target: AWS GuardDuty Malware Protection for S3). `scan_status` column retained but ungated; D01 confirm sets it to `'clean'`. |
-| F05                           | email-delivery               | PLANNED          | SES sender + transactional templates (invites, reminders, enquiries); `SEND_EMAILS=false` logs to console.                                                                      |
-| F06                           | notifications-inbox          | PLANNED          | In-app notification fan-out + unread state for CAs and BOs.                                                                                                                     |
-| F07                           | audit-logging                | PLANNED          | Append-only audit trail for sensitive writes (verification, invites, journal entries, exports). Owns GDPR data-subject-access scaffolding.                                      |
-| F08                           | observability-error-handling | PLANNED          | Sentry/equivalent integration, `statement_parse_log` analytics surface, alerting policy. Track 2 prerequisite — placeholder so it isn't forgotten.                              |
-| [F09](./F09-gmail-connect.md) | gmail-connect                | IMPLEMENTED      | Linked-BO Gmail OAuth (`gmail.readonly`); encrypted tokens in `gmail_connections`; connect / status / disconnect. No search UI or background jobs.                              |
+| ID                                 | Module                       | Status           | One-liner                                                                                                                                                                       |
+| ---------------------------------- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F01                                | auth-sessions                | PLANNED          | NextAuth.js v5 with three session types (CA, linked-BO, independent-BO) + guest tokens; gates every protected route.                                                            |
+| F02                                | tenant-isolation             | PLANNED          | `ca_firm_id` / `client_org_id` scoping helpers + ownership guards used by every API query.                                                                                      |
+| F03                                | file-upload-virus-scan       | DRAFT — deferred | Virus scanning deferred (Railway/ClamAV removed; target: AWS GuardDuty Malware Protection for S3). `scan_status` column retained but ungated; D01 confirm sets it to `'clean'`. |
+| F05                                | email-delivery               | PLANNED          | SES sender + transactional templates (invites, reminders, enquiries); `SEND_EMAILS=false` logs to console.                                                                      |
+| F06                                | notifications-inbox          | PLANNED          | In-app notification fan-out + unread state for CAs and BOs.                                                                                                                     |
+| F07                                | audit-logging                | PLANNED          | Append-only audit trail for sensitive writes (verification, invites, journal entries, exports). Owns GDPR data-subject-access scaffolding.                                      |
+| F08                                | observability-error-handling | PLANNED          | Sentry/equivalent integration, `statement_parse_log` analytics surface, alerting policy. Track 2 prerequisite — placeholder so it isn't forgotten.                              |
+| [F09](./F09-gmail-connect.md)      | gmail-connect                | IMPLEMENTED      | Linked-BO Gmail OAuth (`gmail.readonly`); encrypted tokens in `gmail_connections`; connect / status / disconnect. No search UI or background jobs.                              |
+| [F10](./F10-gmail-invoice-pull.md) | gmail-invoice-pull           | IMPLEMENTED      | Inngest job: search connected Gmail for PDF invoices matching an O04 checklist item; store as `documents` with `gmail_connection_id`; no D06 matching.                          |
 
 ## CA acquisition & practice surface
 
@@ -39,11 +40,13 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 
 ## Client onboarding
 
-| ID                                       | Module                    | Status  | One-liner                                                                                                                                       |
-| ---------------------------------------- | ------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| O01                                      | client-invite-linked-bo   | PLANNED | CA adds client → invite token email → BO accepts → linked-BO session. Owns `acquisition_source` column (`CA-brought` vs `platform-discovered`). |
-| O02                                      | independent-bo-onboarding | PLANNED | ₹199/month self-signup path; gated by `ALPHA_MODE=true` in Track 1 (seeded by team only).                                                       |
-| [O03](./O03-client-knowledge-capture.md) | client-knowledge-capture  | SPECCED | Owns `client_profiles` (Tier 1 required) + `client_knowledge` (Tier 2 enrichment); the per-client business context that feeds D03.              |
+| ID                                       | Module                    | Status      | One-liner                                                                                                                                                            |
+| ---------------------------------------- | ------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O01                                      | client-invite-linked-bo   | PLANNED     | CA adds client → invite token email → BO accepts → linked-BO session. Owns `acquisition_source` column (`CA-brought` vs `platform-discovered`).                      |
+| O02                                      | independent-bo-onboarding | PLANNED     | ₹199/month self-signup path; gated by `ALPHA_MODE=true` in Track 1 (seeded by team only).                                                                            |
+| [O03](./O03-client-knowledge-capture.md) | client-knowledge-capture  | SPECCED     | Owns `client_profiles` (Tier 1 required) + `client_knowledge` (Tier 2 enrichment); the per-client business context that feeds D03. CA form only — not BO onboarding. |
+| [O04](./O04-invoice-checklist.md)        | invoice-checklist         | IMPLEMENTED | BO post-parse destination: clustered invoice checklist, ≤5 quick questions, summary counts. No transaction table. Owns checklist items + clarifications.             |
+| [O05](./O05-payee-memory.md)             | payee-memory              | IMPLEMENTED | Per-org `payee_memory` from BO answers / Not needed. Fingerprint + invoice_policy so later statements skip questions and F10 skips `never` payees.                   |
 
 ## Document pipeline (the engine)
 
@@ -61,14 +64,14 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 
 ## Outputs & ongoing operations
 
-| ID  | Module               | Status  | One-liner                                                                                          |
-| --- | -------------------- | ------- | -------------------------------------------------------------------------------------------------- |
-| X01 | day-book-export      | PLANNED | CA-only export with `had_unresolved_items` warn-only flag; never blocks generation.                |
-| X02 | bo-document-export   | PLANNED | BO can download own uploads anytime, including during a CA's grace period.                         |
-| X03 | ca-data-export       | PLANNED | Full firm data export on request or suspension.                                                    |
-| X04 | monthly-summary-bo   | PLANNED | Plain-English BO-facing view of the month's activity (no accounting jargon). Track 2+.             |
-| X05 | submission-status-bo | PLANNED | "What you've sent / what's still needed" dashboard for BOs.                                        |
-| X06 | reminders            | PLANNED | Cron 09:00 IST → reminder emails for missing invoices/statements; respects do-not-disturb windows. |
+| ID  | Module               | Status  | One-liner                                                                                                                                               |
+| --- | -------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| X01 | day-book-export      | PLANNED | CA-only export with `had_unresolved_items` warn-only flag; never blocks generation.                                                                     |
+| X02 | bo-document-export   | PLANNED | BO can download own uploads anytime, including during a CA's grace period.                                                                              |
+| X03 | ca-data-export       | PLANNED | Full firm data export on request or suspension.                                                                                                         |
+| X04 | monthly-summary-bo   | PLANNED | Plain-English BO-facing view of the month's activity (no accounting jargon). Track 2+.                                                                  |
+| X05 | submission-status-bo | PLANNED | Broader BO "what's still needed" dashboard. Statement-level collect/collected counts ship in O04; this module stays for cross-statement productisation. |
+| X06 | reminders            | PLANNED | Cron 09:00 IST → reminder emails for missing invoices/statements; respects do-not-disturb windows.                                                      |
 
 ---
 
@@ -79,6 +82,7 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 - **acquisition-source-tracking** absorbed into **O01** as a column on `clients`.
 - **legal-compliance** is not a module. Sanctioned-country block lives in **C09** (registration), 7-year retention in **F03** (storage), GDPR audit trail in **F07**.
 - **Frontend route groups** (`(accountant)/`, `(owner)/`, `(auth)/`, `(website)/`) are presentation layers consuming module APIs — they are not modules themselves.
+- **O04** is the independent-BO post-upload surface. BOs must not be shown raw `bank_transactions`. O03 remains CA-only.
 
 ## Reading order for new sessions
 

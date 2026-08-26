@@ -43,6 +43,13 @@
       "when": 1787406000000,
       "tag": "0005_d04_documents_extensions",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787753095802,
+      "tag": "0006_o04_invoice_checklist",
+      "breakpoints": true
     }
   ]
 }

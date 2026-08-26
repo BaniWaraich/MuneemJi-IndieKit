@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { StatementUnlockPrompt } from "./statements/[sid]/statement-unlock-prompt";
 
 type Statement = {
@@ -21,7 +22,13 @@ type Statement = {
   createdAt: string;
 };
 
-function StatusBadge({ status }: { status: Statement["status"] }) {
+function StatusBadge({
+  status,
+  tone = "ca",
+}: {
+  status: Statement["status"];
+  tone?: "owner" | "ca";
+}) {
   const styles: Record<Statement["status"], string> = {
     processing: "bg-amber-50 text-amber-700 border-amber-200",
     phase1_complete: "bg-blue-50 text-blue-700 border-blue-200",
@@ -33,9 +40,9 @@ function StatusBadge({ status }: { status: Statement["status"] }) {
   };
   const label = {
     processing: "Processing",
-    phase1_complete: "Phase 1 complete",
-    parsed: "Parsed",
-    empty: "No transactions",
+    phase1_complete: tone === "owner" ? "Analyzing…" : "Phase 1 complete",
+    parsed: tone === "owner" ? "Ready" : "Parsed",
+    empty: tone === "owner" ? "No payments found" : "No transactions",
     failed: "Failed",
     password_required: "Password needed",
     unlocking: "Unlocking",
@@ -84,11 +91,17 @@ export function StatementsPanel({
   clientOrgId,
   initial,
   detailHrefPrefix = `/clients/${clientOrgId}/statements`,
+  tone = "ca",
+  redirectAfterUpload = false,
 }: {
   clientOrgId: string;
   initial: Statement[];
   detailHrefPrefix?: string;
+  tone?: "owner" | "ca";
+  /** When true, go to `${detailHrefPrefix}/{id}` after a successful upload. */
+  redirectAfterUpload?: boolean;
 }) {
+  const router = useRouter();
   const [statements, setStatements] = useState<Statement[]>(initial);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -106,7 +119,10 @@ export function StatementsPanel({
 
   useEffect(() => {
     const anyInFlight = statements.some(
-      (s) => s.status === "processing" || s.status === "unlocking",
+      (s) =>
+        s.status === "processing" ||
+        s.status === "unlocking" ||
+        s.status === "phase1_complete",
     );
     if (!anyInFlight) return;
     const timer = setInterval(refresh, 3000);
@@ -165,6 +181,9 @@ export function StatementsPanel({
 
       if (fileRef.current) fileRef.current.value = "";
       await refresh();
+      if (redirectAfterUpload) {
+        router.push(`${detailHrefPrefix}/${statementId}`);
+      }
     } catch (err) {
       setUploadError((err as Error).message);
     } finally {
@@ -178,7 +197,9 @@ export function StatementsPanel({
         Bank statements
       </h2>
       <p className="mt-1 text-sm text-neutral-500">
-        Upload a CSV or PDF. We parse it into transactions automatically.
+        {tone === "owner"
+          ? "Upload a CSV or PDF. We'll find invoices you may need to collect."
+          : "Upload a CSV or PDF. We parse it into transactions automatically."}
       </p>
 
       <form onSubmit={handleUpload} className="mt-4 space-y-3">
@@ -222,7 +243,7 @@ export function StatementsPanel({
                       {s.currency} · uploaded {formatDate(s.createdAt)}
                     </p>
                   </div>
-                  <StatusBadge status={s.status} />
+                  <StatusBadge status={s.status} tone={tone} />
                 </div>
                 {s.status === "password_required" && (
                   <StatementUnlockPrompt

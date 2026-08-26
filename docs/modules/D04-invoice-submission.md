@@ -3,7 +3,7 @@ id: D04
 name: invoice-submission
 status: SPECCED
 owners: ["api", "frontend", "db-handler"]
-last_updated: 2026-08-18
+last_updated: 2026-08-26
 ---
 
 # D04 — Invoice Submission
@@ -33,17 +33,17 @@ last_updated: 2026-08-18
 
 ### Explicitly out of scope
 
-| Concern | Owned by | Notes |
-|---|---|---|
-| OCR / field extraction | D05 | Do not call vision models; do not write `document_extractions` |
-| Matching invoice → bank transaction | D06 | Do not write `transaction_document_matches`; do not change `bank_transactions.match_status` |
-| Improving `needs_invoice` identification | D03 / D09 | Read-only consumer of existing flags if shown in UI |
-| Email / Gmail / Outlook auto-pull | future | Not this module |
-| Virus scanning | F03 (deferred) | Confirm sets `scan_status = 'clean'` exactly as D01 does today |
-| Linking an upload to a specific transaction at upload time | D06 | Upload is free-standing; matching is later |
-| Open-items / “what’s still needed” dashboard productisation | X05 | May *display* open items next to the uploader in a later UI pass; not required for D04 acceptance |
-| Guest-token uploads | future | Schema column exists (`submitted_by_guest`); not wired in this slice |
-| Deletion / replace of documents | later | List + upload only |
+| Concern                                                     | Owned by       | Notes                                                                                             |
+| ----------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------- |
+| OCR / field extraction                                      | D05            | Do not call vision models; do not write `document_extractions`                                    |
+| Matching invoice → bank transaction                         | D06            | Do not write `transaction_document_matches`; do not change `bank_transactions.match_status`       |
+| Improving `needs_invoice` identification                    | D03 / D09      | Read-only consumer of existing flags if shown in UI                                               |
+| Email / Gmail / Outlook auto-pull                           | F10            | Gmail PDF pull is F10; Outlook remains out of D04                                                 |
+| Virus scanning                                              | F03 (deferred) | Confirm sets `scan_status = 'clean'` exactly as D01 does today                                    |
+| Linking an upload to a specific transaction at upload time  | D06            | Upload is free-standing; matching is later                                                        |
+| Open-items / “what’s still needed” dashboard productisation | X05            | May _display_ open items next to the uploader in a later UI pass; not required for D04 acceptance |
+| Guest-token uploads                                         | future         | Schema column exists (`submitted_by_guest`); not wired in this slice                              |
+| Deletion / replace of documents                             | later          | List + upload only                                                                                |
 
 ---
 
@@ -89,23 +89,23 @@ No worker is required for this slice.
 
 The existing `documents` table is the target table but is missing fields D01 relies on for parity and cap enforcement. D04 owns the following migration:
 
-| Change | Type | Notes |
-|---|---|---|
-| `file_size_bytes` | `bigint` nullable | Stored at create time from client-reported size; used in firm storage sum |
-| `submitted_by_user` | `text` nullable, FK → `users.id` | CA staff uploader (mirrors `bank_statements.uploaded_by_user`) |
-| Check: exactly one of `submitted_by_user` / `submitted_by_client` / `submitted_by_guest` is non-null | check constraint | Guest path unused in this slice but column retained |
+| Change                                                                                               | Type                             | Notes                                                                     |
+| ---------------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- |
+| `file_size_bytes`                                                                                    | `bigint` nullable                | Stored at create time from client-reported size; used in firm storage sum |
+| `submitted_by_user`                                                                                  | `text` nullable, FK → `users.id` | CA staff uploader (mirrors `bank_statements.uploaded_by_user`)            |
+| Check: exactly one of `submitted_by_user` / `submitted_by_client` / `submitted_by_guest` is non-null | check constraint                 | Guest path unused in this slice but column retained                       |
 
 `ocr_status` remains default `'pending'`. No writes to `document_extractions` or `transaction_document_matches`.
 
 ### 4.2 Ownership
 
-| Table | Ownership | Notes |
-|---|---|---|
-| `documents` | sole writer for create + scan_status transition on confirm | D05 will later own `ocr_status` transitions; D06 owns match rows |
-| `client_orgs` | reader only | firm_id + currency resolution for caps |
-| `bank_statements` | reader only | firm storage sum includes statement bytes + document bytes |
-| `document_extractions` | **never touches** | D05 |
-| `transaction_document_matches` | **never touches** | D06 |
+| Table                          | Ownership                                                             | Notes                                                                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `documents`                    | sole writer for **manual** create + scan_status transition on confirm | D05 will later own `ocr_status` transitions; D06 owns match rows. **F10 is a shared writer** for Gmail-sourced rows and owns `gmail_connection_id` / `gmail_address`. |
+| `client_orgs`                  | reader only                                                           | firm_id + currency resolution for caps                                                                                                                                |
+| `bank_statements`              | reader only                                                           | firm storage sum includes statement bytes + document bytes                                                                                                            |
+| `document_extractions`         | **never touches**                                                     | D05                                                                                                                                                                   |
+| `transaction_document_matches` | **never touches**                                                     | D06                                                                                                                                                                   |
 
 ### 4.3 S3 key layout
 
@@ -125,9 +125,9 @@ Sanitisation: strip path separators; keep basename only; max 180 chars for the f
 - **Request body:**
   ```ts
   {
-    filename: string;       // 1–255
-    contentType: string;    // see allowed list
-    fileSizeBytes: number;  // int, 1 .. 25_000_000
+    filename: string; // 1–255
+    contentType: string; // see allowed list
+    fileSizeBytes: number; // int, 1 .. 25_000_000
   }
   ```
 - **Response 200:**
@@ -146,24 +146,28 @@ Sanitisation: strip path separators; keep basename only; max 180 chars for the f
 
 **Create-time row defaults**
 
-| Column | Value |
-|---|---|
-| `scan_status` | `'pending'` |
-| `ocr_status` | `'pending'` |
-| `file_type` | `'pdf'` if contentType is PDF, else `'image'` |
-| `submitted_by_user` / `submitted_by_client` | set from session kind (exactly one) |
-| `file_size_bytes` | client-reported value |
+| Column                                      | Value                                         |
+| ------------------------------------------- | --------------------------------------------- |
+| `scan_status`                               | `'pending'`                                   |
+| `ocr_status`                                | `'pending'`                                   |
+| `file_type`                                 | `'pdf'` if contentType is PDF, else `'image'` |
+| `submitted_by_user` / `submitted_by_client` | set from session kind (exactly one)           |
+| `file_size_bytes`                           | client-reported value                         |
 
 ### `POST /api/v1/clients/:id/documents/confirm`
 
 - **Auth:** same as create
 - **Request body:**
   ```ts
-  { documentId: string } // uuid
+  {
+    documentId: string;
+  } // uuid
   ```
 - **Response 200:**
   ```ts
-  { confirmed: true }
+  {
+    confirmed: true;
+  }
   ```
 - **Behaviour:**
   1. Load row; must belong to `:id`; `scan_status` must be `'pending'` else `409 ALREADY_CONFIRMED`
@@ -187,7 +191,7 @@ Sanitisation: strip path separators; keep basename only; max 180 chars for the f
       scanStatus: string;
       ocrStatus: string;
       createdAt: string; // ISO
-    }>
+    }>;
   }
   ```
 - Ordered by `created_at DESC`
@@ -231,11 +235,11 @@ None. D04 is pure upload orchestration.
 
 ## 9. Economics
 
-| Component | Per unit | Frequency | Notes |
-|---|---|---|---|
-| S3 PUT | ~$0.000005 | per file | negligible |
-| S3 storage | ~$0.023/GB/month | per file | shared 500 MB firm cap |
-| Inngest event | free tier / negligible | per confirm | required emit |
+| Component     | Per unit               | Frequency   | Notes                  |
+| ------------- | ---------------------- | ----------- | ---------------------- |
+| S3 PUT        | ~$0.000005             | per file    | negligible             |
+| S3 storage    | ~$0.023/GB/month       | per file    | shared 500 MB firm cap |
+| Inngest event | free tier / negligible | per confirm | required emit          |
 
 No LLM cost. Watch metric: firm storage approaching 80% of 500 MB.
 
@@ -243,14 +247,14 @@ No LLM cost. Watch metric: firm storage approaching 80% of 500 MB.
 
 ## 10. Failure Modes
 
-| Failure | Trigger | Impact | Severity | Recovery |
-|---|---|---|---|---|
-| `STORAGE_LIMIT_EXCEEDED` | Firm ≥ 500 MB (statements + documents) | Upload blocked; 402 | medium | Delete old files (manual in V1) |
-| S3 PUT failure | Network / expired presign | Row left `scan_status=pending` | low | User retries; orphan harmless |
-| `UPLOAD_NOT_FOUND` | Confirm before PUT finishes | 404 | low | Retry confirm after PUT |
-| `FILE_TOO_LARGE` | HEAD size > 25 MB | 413; row stays pending | low | User uploads smaller file |
-| `ALREADY_CONFIRMED` | Double confirm | 409 | low | UI treats as success / refreshes list |
-| Inngest down at confirm | Outage | Row is clean; event missing | low (this slice) | D05 can also poll `ocr_status=pending` later |
+| Failure                  | Trigger                                | Impact                         | Severity         | Recovery                                     |
+| ------------------------ | -------------------------------------- | ------------------------------ | ---------------- | -------------------------------------------- |
+| `STORAGE_LIMIT_EXCEEDED` | Firm ≥ 500 MB (statements + documents) | Upload blocked; 402            | medium           | Delete old files (manual in V1)              |
+| S3 PUT failure           | Network / expired presign              | Row left `scan_status=pending` | low              | User retries; orphan harmless                |
+| `UPLOAD_NOT_FOUND`       | Confirm before PUT finishes            | 404                            | low              | Retry confirm after PUT                      |
+| `FILE_TOO_LARGE`         | HEAD size > 25 MB                      | 413; row stays pending         | low              | User uploads smaller file                    |
+| `ALREADY_CONFIRMED`      | Double confirm                         | 409                            | low              | UI treats as success / refreshes list        |
+| Inngest down at confirm  | Outage                                 | Row is clean; event missing    | low (this slice) | D05 can also poll `ocr_status=pending` later |
 
 ---
 
@@ -326,30 +330,30 @@ A build passes D04 when **all** of the following are true:
 
 Prefer route-level tests (same style as existing API tests if present) or a thin integration harness under `scripts/` / test folder.
 
-| ID | Case | Setup | Assert |
-|---|---|---|---|
-| T01 | Happy path PDF | Auth as owner; POST create → mock/real S3 PUT → confirm | 200; row clean + pending OCR; S3 object exists; event emitted |
-| T02 | Happy path PNG | Auth as CA | `file_type = 'image'` |
-| T03 | Happy path HEIC | Auth as owner; contentType image/heic | 200; `file_type = 'image'` |
-| T04 | Cap: firm 500 MB | Seed statements/docs summing ≥ 500 MB − 1 byte + large file | 402 |
-| T05 | Oversize create | `fileSizeBytes = 26_000_000` | 400 |
-| T06 | Oversize confirm | PUT object > 25 MB; confirm | 413 |
-| T07 | Missing PUT | Create only; confirm | 404 UPLOAD_NOT_FOUND |
-| T08 | Double confirm | Confirm twice | second 409; event not double-fired |
-| T09 | Cross-tenant | Owner of org A hits org B | 403 |
-| T10 | List order | Upload 2 files | GET newest first |
-| T11 | Auth required | No session | 401 |
-| T12 | No count cap | Seed 250 small docs under firm size budget | POST still succeeds |
+| ID  | Case             | Setup                                                       | Assert                                                        |
+| --- | ---------------- | ----------------------------------------------------------- | ------------------------------------------------------------- |
+| T01 | Happy path PDF   | Auth as owner; POST create → mock/real S3 PUT → confirm     | 200; row clean + pending OCR; S3 object exists; event emitted |
+| T02 | Happy path PNG   | Auth as CA                                                  | `file_type = 'image'`                                         |
+| T03 | Happy path HEIC  | Auth as owner; contentType image/heic                       | 200; `file_type = 'image'`                                    |
+| T04 | Cap: firm 500 MB | Seed statements/docs summing ≥ 500 MB − 1 byte + large file | 402                                                           |
+| T05 | Oversize create  | `fileSizeBytes = 26_000_000`                                | 400                                                           |
+| T06 | Oversize confirm | PUT object > 25 MB; confirm                                 | 413                                                           |
+| T07 | Missing PUT      | Create only; confirm                                        | 404 UPLOAD_NOT_FOUND                                          |
+| T08 | Double confirm   | Confirm twice                                               | second 409; event not double-fired                            |
+| T09 | Cross-tenant     | Owner of org A hits org B                                   | 403                                                           |
+| T10 | List order       | Upload 2 files                                              | GET newest first                                              |
+| T11 | Auth required    | No session                                                  | 401                                                           |
+| T12 | No count cap     | Seed 250 small docs under firm size budget                  | POST still succeeds                                           |
 
 ### 14.2 UI harness (manual checklist)
 
-| ID | Case | Assert |
-|---|---|---|
-| U01 | Owner multi-upload | Select 3 files; all appear in list with filenames |
-| U02 | CA panel on client page | Upload visible without leaving client context |
-| U03 | Error copy | Trigger 402; message is human-readable |
-| U04 | Disabled state | Button shows “Uploading…” and ignores double-submit |
-| U05 | Empty state | New client shows empty copy, not a broken table |
+| ID  | Case                    | Assert                                              |
+| --- | ----------------------- | --------------------------------------------------- |
+| U01 | Owner multi-upload      | Select 3 files; all appear in list with filenames   |
+| U02 | CA panel on client page | Upload visible without leaving client context       |
+| U03 | Error copy              | Trigger 402; message is human-readable              |
+| U04 | Disabled state          | Button shows “Uploading…” and ignores double-submit |
+| U05 | Empty state             | New client shows empty copy, not a broken table     |
 
 ### 14.3 Out-of-scope tests (do not write yet)
 
@@ -371,19 +375,20 @@ Prefer route-level tests (same style as existing API tests if present) or a thin
 
 ## 16. Decisions (resolved 2026-08-18)
 
-| # | Decision | Resolution |
-|---|---|---|
-| Q1 | Shared storage pool | **Yes** — firm 500 MB counts statements + documents; update D01 sum in same work |
-| Q2 | Emit `muneem/document.uploaded` | **Yes** — required on confirm; no consumer yet |
-| Q3 | Document count cap | **None** — size cap only (500 MB firm + 25 MB/file) |
-| Q4 | HEIC | **Yes** — allow `image/heic` and `image/heif`; store as `file_type = 'image'` |
-| Q5 | Who uploads | **Both** CA and linked BO |
+| #   | Decision                        | Resolution                                                                       |
+| --- | ------------------------------- | -------------------------------------------------------------------------------- |
+| Q1  | Shared storage pool             | **Yes** — firm 500 MB counts statements + documents; update D01 sum in same work |
+| Q2  | Emit `muneem/document.uploaded` | **Yes** — required on confirm; no consumer yet                                   |
+| Q3  | Document count cap              | **None** — size cap only (500 MB firm + 25 MB/file)                              |
+| Q4  | HEIC                            | **Yes** — allow `image/heic` and `image/heif`; store as `file_type = 'image'`    |
+| Q5  | Who uploads                     | **Both** CA and linked BO                                                        |
 
 ---
 
 ## 17. Change log
 
-| Date | Change | By |
-|---|---|---|
-| 2026-08-18 | Initial DRAFT — upload + store only; OCR/match deferred | Grok / Bani session |
-| 2026-08-18 | SPECCED — Q1–Q5 resolved: shared pool, event required, no count cap, HEIC yes, CA+BO | Bani |
+| Date       | Change                                                                                              | By                  |
+| ---------- | --------------------------------------------------------------------------------------------------- | ------------------- |
+| 2026-08-18 | Initial DRAFT — upload + store only; OCR/match deferred                                             | Grok / Bani session |
+| 2026-08-18 | SPECCED — Q1–Q5 resolved: shared pool, event required, no count cap, HEIC yes, CA+BO                | Bani                |
+| 2026-08-26 | F10 may insert Gmail-sourced `documents` rows (shared writer); D04 remains the manual-upload owner. | Bani / agent        |

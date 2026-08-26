@@ -3,7 +3,7 @@ id: F09
 name: gmail-connect
 status: IMPLEMENTED
 owners: ["api", "frontend", "db-handler"]
-last_updated: 2026-08-22
+last_updated: 2026-08-26
 ---
 
 # F09 — Gmail Connect Foundation
@@ -200,7 +200,7 @@ None.
 ## 11. Dependencies
 
 - **Depends on (modules):** O01 (linked BO / `client_users`), F01 session shape (`requireOwnerSession`)
-- **Depended on by (modules):** future email invoice-pull (D04 listed this as out of scope); not D04 itself
+- **Depended on by (modules):** [F10](./F10-gmail-invoice-pull.md) (search/get/download helpers + `gmail_connections`); O04 (connection status hint only)
 - **External services:** Google OAuth 2.0 + Gmail API (`googleapis`)
 
 ---

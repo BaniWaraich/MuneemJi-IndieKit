@@ -75,6 +75,7 @@ const adapter = DrizzleAdapter(db, {
 });
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  trustHost: true,
   pages: {
     signIn: "/login",
     signOut: "/sign-out",
@@ -129,11 +130,13 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
       // BO client-credentials returns role + firmId on the user object.
       // Persist them first — client_users rows are not in app_user.
+      if (user?.id) token.sub = user.id;
       if (user?.role) token.role = user.role;
       if (user?.firmId) token.firmId = user.firmId;
 
-      // Muneem Ji: load role + firmId from app_user on first sign-in (CA staff)
-      if (user?.id) {
+      // Muneem Ji: load role + firmId from app_user on first sign-in (CA staff).
+      // Skip for BOs — their id is client_users.id, not app_user.id.
+      if (user?.id && user.role !== "business_owner") {
         const dbUser = await db
           .select({ role: users.role, firmId: users.firmId })
           .from(users)
