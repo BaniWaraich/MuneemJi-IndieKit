@@ -1,7 +1,7 @@
 ---
 id: O04
 name: invoice-checklist
-status: SPECCED
+status: IMPLEMENTED
 owners: ["api", "frontend", "inngest-handler", "db-handler"]
 last_updated: 2026-08-26
 ---
@@ -14,7 +14,7 @@ last_updated: 2026-08-26
 
 ## Status
 
-`SPECCED` (2026-08-26) — approved with the BO invoice-checklist plan. Implementation may begin.
+`IMPLEMENTED` (2026-08-26) — builder on `interpretation.complete`, owner checklist/clarification APIs, BO checklist UI (no transaction table).
 
 O03 (CA client-knowledge form) is **not** part of the BO happy path. Do not send BOs to GST / vendor-list onboarding.
 
@@ -327,5 +327,6 @@ None for v1. Download summary PDF is deferred. Multi-Gmail UI is deferred; schem
 | Date       | Change                                                            | By           |
 | ---------- | ----------------------------------------------------------------- | ------------ |
 | 2026-08-26 | Initial SPECCED — BO checklist, clarifications cap 5, no tx table | Bani / agent |
+| 2026-08-26 | IMPLEMENTED — builder, owner APIs, checklist UI                   | Bani / agent |
 
 ---

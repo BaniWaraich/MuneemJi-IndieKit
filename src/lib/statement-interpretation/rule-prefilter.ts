@@ -4,22 +4,27 @@ import type {
   KnownCustomer,
   KnownVendor,
   OwnerDrawingsPattern,
-} from '@/db/schema/muneem';
-import type { Phase1Transaction } from './parse-markdown-kv';
+} from "@/db/schema/muneem";
+import { fingerprintPayee } from "@/lib/payee-memory/fingerprint";
+import {
+  memoryOmitsPayee,
+  type PayeeMemoryRecord,
+} from "@/lib/payee-memory/types";
+import type { Phase1Transaction } from "./parse-markdown-kv";
 
 export type RuleCategory =
-  | 'inter_account_transfer'
-  | 'vendor_payment'
-  | 'customer_receipt'
-  | 'loan_emi'
-  | 'owner_drawing';
+  | "inter_account_transfer"
+  | "vendor_payment"
+  | "customer_receipt"
+  | "loan_emi"
+  | "owner_drawing";
 
 export type RuleMethod =
-  | 'rule_known_vendor'
-  | 'rule_known_customer'
-  | 'rule_active_loan'
-  | 'rule_inter_account'
-  | 'rule_owner_drawing';
+  | "rule_known_vendor"
+  | "rule_known_customer"
+  | "rule_active_loan"
+  | "rule_inter_account"
+  | "rule_owner_drawing";
 
 export type RuleMatch = {
   transaction_index: number;
@@ -39,6 +44,7 @@ export type RulePrefilterContext = {
   knownCustomers: KnownCustomer[];
   activeLoans: ActiveLoan[];
   ownerDrawingsPattern: OwnerDrawingsPattern | null;
+  payeeMemory?: PayeeMemoryRecord[];
 };
 
 export type RulePrefilterResult = {
@@ -67,7 +73,7 @@ export function runRulePrefilter(
   const unmatched: Phase1Transaction[] = [];
 
   for (const tx of transactions) {
-    const desc = tx.description ?? '';
+    const desc = tx.description ?? "";
 
     const inter = matchInterAccount(tx, desc, ctx);
     if (inter) {
@@ -99,6 +105,12 @@ export function runRulePrefilter(
       continue;
     }
 
+    const remembered = matchPayeeMemory(tx, desc, ctx);
+    if (remembered) {
+      matches.set(tx.transaction_index, remembered);
+      continue;
+    }
+
     unmatched.push(tx);
   }
 
@@ -113,14 +125,14 @@ function matchInterAccount(
   if (!Array.isArray(ctx.bankAccounts)) return null;
   for (const acc of ctx.bankAccounts) {
     const last4 = acc?.account_number_last4;
-    if (!last4 || typeof last4 !== 'string') continue;
+    if (!last4 || typeof last4 !== "string") continue;
     if (ctx.ownAccountLast4 && last4 === ctx.ownAccountLast4) continue;
     if (desc.includes(last4)) {
       return {
         transaction_index: tx.transaction_index,
-        category: 'inter_account_transfer',
+        category: "inter_account_transfer",
         needs_invoice: false,
-        method: 'rule_inter_account',
+        method: "rule_inter_account",
         reasoning: `Inter-account transfer to/from ${acc.account_label ?? `account ${last4}`}`,
         matched_known_vendor_name: null,
         matched_active_loan_lender: null,
@@ -138,16 +150,16 @@ function matchKnownVendor(
   if (!Array.isArray(ctx.knownVendors)) return null;
   for (const v of ctx.knownVendors) {
     if (!v || !Array.isArray(v.description_patterns)) {
-      logMalformed('knownVendors', v);
+      logMalformed("knownVendors", v);
       continue;
     }
     for (const pat of v.description_patterns) {
-      if (typeof pat === 'string' && containsCi(desc, pat)) {
+      if (typeof pat === "string" && containsCi(desc, pat)) {
         return {
           transaction_index: tx.transaction_index,
-          category: 'vendor_payment',
+          category: "vendor_payment",
           needs_invoice: Boolean(v.needs_invoice),
-          method: 'rule_known_vendor',
+          method: "rule_known_vendor",
           reasoning: `Matched known vendor: ${v.name}`,
           matched_known_vendor_name: v.name ?? null,
           matched_active_loan_lender: null,
@@ -166,16 +178,16 @@ function matchKnownCustomer(
   if (!Array.isArray(ctx.knownCustomers)) return null;
   for (const c of ctx.knownCustomers) {
     if (!c || !Array.isArray(c.description_patterns)) {
-      logMalformed('knownCustomers', c);
+      logMalformed("knownCustomers", c);
       continue;
     }
     for (const pat of c.description_patterns) {
-      if (typeof pat === 'string' && containsCi(desc, pat)) {
+      if (typeof pat === "string" && containsCi(desc, pat)) {
         return {
           transaction_index: tx.transaction_index,
-          category: 'customer_receipt',
+          category: "customer_receipt",
           needs_invoice: false,
-          method: 'rule_known_customer',
+          method: "rule_known_customer",
           reasoning: `Matched known customer: ${c.name}`,
           matched_known_vendor_name: null,
           matched_active_loan_lender: null,
@@ -193,16 +205,16 @@ function matchActiveLoan(
 ): RuleMatch | null {
   if (!Array.isArray(ctx.activeLoans)) return null;
   for (const l of ctx.activeLoans) {
-    if (!l || typeof l.description_pattern !== 'string') {
-      logMalformed('activeLoans', l);
+    if (!l || typeof l.description_pattern !== "string") {
+      logMalformed("activeLoans", l);
       continue;
     }
     if (containsCi(desc, l.description_pattern)) {
       return {
         transaction_index: tx.transaction_index,
-        category: 'loan_emi',
+        category: "loan_emi",
         needs_invoice: false,
-        method: 'rule_active_loan',
+        method: "rule_active_loan",
         reasoning: `Matched active loan: ${l.lender} (${l.loan_type})`,
         matched_known_vendor_name: null,
         matched_active_loan_lender: l.lender ?? null,
@@ -218,20 +230,62 @@ function matchOwnerDrawings(
   ctx: RulePrefilterContext,
 ): RuleMatch | null {
   const p = ctx.ownerDrawingsPattern;
-  if (!p || typeof p.typical_description_pattern !== 'string') return null;
+  if (!p || typeof p.typical_description_pattern !== "string") return null;
   if (tx.debit_minor <= 0n) return null;
   if (containsCi(desc, p.typical_description_pattern)) {
     return {
       transaction_index: tx.transaction_index,
-      category: 'owner_drawing',
+      category: "owner_drawing",
       needs_invoice: false,
-      method: 'rule_owner_drawing',
-      reasoning: 'Matched owner drawings pattern',
+      method: "rule_owner_drawing",
+      reasoning: "Matched owner drawings pattern",
       matched_known_vendor_name: null,
       matched_active_loan_lender: null,
     };
   }
   return null;
+}
+
+function matchPayeeMemory(
+  tx: Phase1Transaction,
+  desc: string,
+  ctx: RulePrefilterContext,
+): RuleMatch | null {
+  if (!ctx.payeeMemory?.length) return null;
+  const key = fingerprintPayee(desc);
+  const row = ctx.payeeMemory.find((m) => m.payeeKey === key);
+  if (!memoryOmitsPayee(row)) return null;
+  if (row?.relationship === "self") {
+    return {
+      transaction_index: tx.transaction_index,
+      category: "inter_account_transfer",
+      needs_invoice: false,
+      method: "rule_inter_account",
+      reasoning: `Payee memory: ${row.displayName} is another account`,
+      matched_known_vendor_name: null,
+      matched_active_loan_lender: null,
+    };
+  }
+  if (row?.relationship === "family") {
+    return {
+      transaction_index: tx.transaction_index,
+      category: "owner_drawing",
+      needs_invoice: false,
+      method: "rule_owner_drawing",
+      reasoning: `Payee memory: ${row.displayName} is personal / family`,
+      matched_known_vendor_name: null,
+      matched_active_loan_lender: null,
+    };
+  }
+  return {
+    transaction_index: tx.transaction_index,
+    category: "vendor_payment",
+    needs_invoice: false,
+    method: "rule_known_vendor",
+    reasoning: `Payee memory: invoice not needed for ${row?.displayName ?? key}`,
+    matched_known_vendor_name: row?.displayName ?? null,
+    matched_active_loan_lender: null,
+  };
 }
 
 function logMalformed(field: string, entry: unknown): void {

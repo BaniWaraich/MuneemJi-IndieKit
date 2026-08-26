@@ -1,7 +1,7 @@
 ---
 id: O05
 name: payee-memory
-status: SPECCED
+status: IMPLEMENTED
 owners: ["db-handler", "api"]
 last_updated: 2026-08-26
 ---
@@ -14,7 +14,7 @@ last_updated: 2026-08-26
 
 ## Status
 
-`SPECCED` (2026-08-26) — approved with the BO invoice-checklist plan. Implementation may begin.
+`IMPLEMENTED` (2026-08-26) — `payee_memory` table, fingerprint helpers, writes from checklist answers / Not needed; D03 optional pre-filter.
 
 ---
 
@@ -166,8 +166,9 @@ None. Multi-Gmail and Outlook do not affect this table.
 
 ## 13. Change Log
 
-| Date       | Change                                               | By           |
-| ---------- | ---------------------------------------------------- | ------------ |
-| 2026-08-26 | Initial SPECCED — payee fingerprint + `payee_memory` | Bani / agent |
+| Date       | Change                                                   | By           |
+| ---------- | -------------------------------------------------------- | ------------ |
+| 2026-08-26 | Initial SPECCED — payee fingerprint + `payee_memory`     | Bani / agent |
+| 2026-08-26 | IMPLEMENTED — schema, fingerprint, store, D03 pre-filter | Bani / agent |
 
 ---

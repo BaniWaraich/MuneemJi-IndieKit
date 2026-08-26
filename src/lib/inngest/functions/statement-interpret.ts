@@ -45,6 +45,7 @@ import {
   type InterpretedRow,
 } from "@/lib/statement-interpretation/insert-transactions";
 import { ensureClientProfile } from "@/lib/client-profile/ensure-profile";
+import { listPayeeMemory } from "@/lib/payee-memory/store";
 
 type LogCtx = {
   runId?: string;
@@ -211,6 +212,8 @@ async function loadProfileAndPrefilter(
     profile.bankAccounts.find((a) => a.is_primary_operating)
       ?.account_number_last4 ?? null;
 
+  const payeeMemory = await listPayeeMemory(statement.clientOrgId);
+
   const ruleResult = runRulePrefilter(doc.transactions, {
     ownAccountLast4,
     bankAccounts: profile.bankAccounts,
@@ -218,6 +221,7 @@ async function loadProfileAndPrefilter(
     knownCustomers: knowledge?.knownCustomers ?? [],
     activeLoans: knowledge?.activeLoans ?? [],
     ownerDrawingsPattern: knowledge?.ownerDrawingsPattern ?? null,
+    payeeMemory,
   });
 
   return { firmId: org.firmId, profile, knowledge, doc, ruleResult };

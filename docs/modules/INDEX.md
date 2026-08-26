@@ -20,7 +20,7 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 | F07                                | audit-logging                | PLANNED          | Append-only audit trail for sensitive writes (verification, invites, journal entries, exports). Owns GDPR data-subject-access scaffolding.                                      |
 | F08                                | observability-error-handling | PLANNED          | Sentry/equivalent integration, `statement_parse_log` analytics surface, alerting policy. Track 2 prerequisite — placeholder so it isn't forgotten.                              |
 | [F09](./F09-gmail-connect.md)      | gmail-connect                | IMPLEMENTED      | Linked-BO Gmail OAuth (`gmail.readonly`); encrypted tokens in `gmail_connections`; connect / status / disconnect. No search UI or background jobs.                              |
-| [F10](./F10-gmail-invoice-pull.md) | gmail-invoice-pull           | SPECCED          | Inngest job: search connected Gmail for PDF invoices matching an O04 checklist item; store as `documents` with `gmail_connection_id`; no D06 matching.                          |
+| [F10](./F10-gmail-invoice-pull.md) | gmail-invoice-pull           | IMPLEMENTED      | Inngest job: search connected Gmail for PDF invoices matching an O04 checklist item; store as `documents` with `gmail_connection_id`; no D06 matching.                          |
 
 ## CA acquisition & practice surface
 
@@ -40,13 +40,13 @@ When this index lists a module without a corresponding `.md` file in `docs/modul
 
 ## Client onboarding
 
-| ID                                       | Module                    | Status  | One-liner                                                                                                                                                            |
-| ---------------------------------------- | ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| O01                                      | client-invite-linked-bo   | PLANNED | CA adds client → invite token email → BO accepts → linked-BO session. Owns `acquisition_source` column (`CA-brought` vs `platform-discovered`).                      |
-| O02                                      | independent-bo-onboarding | PLANNED | ₹199/month self-signup path; gated by `ALPHA_MODE=true` in Track 1 (seeded by team only).                                                                            |
-| [O03](./O03-client-knowledge-capture.md) | client-knowledge-capture  | SPECCED | Owns `client_profiles` (Tier 1 required) + `client_knowledge` (Tier 2 enrichment); the per-client business context that feeds D03. CA form only — not BO onboarding. |
-| [O04](./O04-invoice-checklist.md)        | invoice-checklist         | SPECCED | BO post-parse destination: clustered invoice checklist, ≤5 quick questions, summary counts. No transaction table. Owns checklist items + clarifications.             |
-| [O05](./O05-payee-memory.md)             | payee-memory              | SPECCED | Per-org `payee_memory` from BO answers / Not needed. Fingerprint + invoice_policy so later statements skip questions and F10 skips `never` payees.                   |
+| ID                                       | Module                    | Status      | One-liner                                                                                                                                                            |
+| ---------------------------------------- | ------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O01                                      | client-invite-linked-bo   | PLANNED     | CA adds client → invite token email → BO accepts → linked-BO session. Owns `acquisition_source` column (`CA-brought` vs `platform-discovered`).                      |
+| O02                                      | independent-bo-onboarding | PLANNED     | ₹199/month self-signup path; gated by `ALPHA_MODE=true` in Track 1 (seeded by team only).                                                                            |
+| [O03](./O03-client-knowledge-capture.md) | client-knowledge-capture  | SPECCED     | Owns `client_profiles` (Tier 1 required) + `client_knowledge` (Tier 2 enrichment); the per-client business context that feeds D03. CA form only — not BO onboarding. |
+| [O04](./O04-invoice-checklist.md)        | invoice-checklist         | IMPLEMENTED | BO post-parse destination: clustered invoice checklist, ≤5 quick questions, summary counts. No transaction table. Owns checklist items + clarifications.             |
+| [O05](./O05-payee-memory.md)             | payee-memory              | IMPLEMENTED | Per-org `payee_memory` from BO answers / Not needed. Fingerprint + invoice_policy so later statements skip questions and F10 skips `never` payees.                   |
 
 ## Document pipeline (the engine)
 

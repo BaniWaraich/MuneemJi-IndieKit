@@ -28,12 +28,12 @@ export function ChecklistClient({ sid }: { sid: string }) {
   }, [sid]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    const timer = setInterval(() => void load(), 8000);
-    return () => clearInterval(timer);
+    const start = window.setTimeout(() => void load(), 0);
+    const timer = window.setInterval(() => void load(), 8000);
+    return () => {
+      window.clearTimeout(start);
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   async function markNotNeeded(id: string) {
