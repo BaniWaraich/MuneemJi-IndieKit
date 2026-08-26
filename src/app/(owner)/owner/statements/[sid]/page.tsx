@@ -1,10 +1,14 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { and, asc, eq } from "drizzle-orm";
+import { notFound, redirect } from "next/navigation";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { bankStatements, bankTransactions } from "@/db/schema/muneem";
+import { bankStatements } from "@/db/schema/muneem";
 import { getOwnerSession } from "@/lib/auth/tenant";
-import { formatINR, formatDateIN } from "@/lib/format/inr";
+import { formatDateIN } from "@/lib/format/inr";
+import {
+  OwnerUnlock,
+  StatementParseProgress,
+} from "../../_components/statement-parse-progress";
 
 export default async function OwnerStatementDetailPage({
   params,
@@ -23,14 +27,17 @@ export default async function OwnerStatementDetailPage({
   });
   if (!statement) notFound();
 
-  const txs = await db
-    .select()
-    .from(bankTransactions)
-    .where(eq(bankTransactions.statementId, sid))
-    .orderBy(asc(bankTransactions.transactionDate));
+  if (statement.status === "parsed") {
+    redirect(`/owner/statements/${sid}/checklist`);
+  }
+
+  const inFlight =
+    statement.status === "processing" ||
+    statement.status === "phase1_complete" ||
+    statement.status === "unlocking";
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <Link
         href="/owner/statements"
         className="text-primary hover:text-primary-hover text-sm"
@@ -46,61 +53,33 @@ export default async function OwnerStatementDetailPage({
           {statement.periodStart && statement.periodEnd
             ? `${formatDateIN(statement.periodStart)} – ${formatDateIN(statement.periodEnd)} · `
             : ""}
-          {statement.currency} · status:{" "}
-          <span className="font-medium text-neutral-700">
-            {statement.status}
-          </span>
+          {statement.currency}
         </p>
-        {statement.status === "failed" && statement.errorMessage && (
-          <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
-            {statement.errorMessage}
-          </p>
-        )}
       </div>
 
-      <div className="rounded-xl border border-neutral-200 bg-white shadow-sm">
-        <div className="border-b border-neutral-200 px-6 py-4">
-          <h2 className="text-lg font-semibold text-neutral-900">
-            Transactions ({txs.length})
-          </h2>
-        </div>
-        {txs.length === 0 ? (
-          <p className="px-6 py-6 text-sm text-neutral-500">
-            {statement.status === "processing"
-              ? "Parsing in progress — refresh in a moment."
-              : "No transactions parsed from this statement."}
-          </p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-100 text-xs text-neutral-700">
-              <tr>
-                <th className="px-6 py-2 text-left font-medium">Date</th>
-                <th className="px-6 py-2 text-left font-medium">Description</th>
-                <th className="px-6 py-2 text-right font-medium">Amount</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-200">
-              {txs.map((t) => (
-                <tr key={t.id}>
-                  <td className="px-6 py-2 whitespace-nowrap text-neutral-700">
-                    {formatDateIN(t.transactionDate)}
-                  </td>
-                  <td className="px-6 py-2 text-neutral-900">
-                    {t.description}
-                  </td>
-                  <td
-                    className={`px-6 py-2 text-right font-medium whitespace-nowrap ${
-                      t.amountMinor < 0n ? "text-red-600" : "text-green-700"
-                    }`}
-                  >
-                    {formatINR(t.amountMinor)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      {inFlight && (
+        <StatementParseProgress
+          clientOrgId={session.clientOrgId}
+          statementId={sid}
+        />
+      )}
+
+      {statement.status === "password_required" && (
+        <OwnerUnlock clientOrgId={session.clientOrgId} statementId={sid} />
+      )}
+
+      {statement.status === "failed" && (
+        <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {statement.errorMessage ||
+            "We couldn't read this statement. Try another file."}
+        </p>
+      )}
+
+      {statement.status === "empty" && (
+        <p className="text-sm text-neutral-500">
+          We didn&apos;t find any payments on this statement.
+        </p>
+      )}
     </div>
   );
 }

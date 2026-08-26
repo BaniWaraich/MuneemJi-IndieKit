@@ -28,18 +28,20 @@ export default async function OwnerStatementsPage() {
   }));
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <div>
         <h2 className="text-2xl font-semibold text-neutral-900">Statements</h2>
         <p className="mt-1 text-sm text-neutral-500">
-          Upload your bank statement and we&apos;ll pull out each transaction
-          automatically.
+          Upload your bank statement. We&apos;ll show the invoices to collect —
+          not a list of every payment.
         </p>
       </div>
       <StatementsPanel
         clientOrgId={session.clientOrgId}
         initial={initial}
         detailHrefPrefix="/owner/statements"
+        tone="owner"
+        navigateOnUpload={(id) => `/owner/statements/${id}`}
       />
     </div>
   );

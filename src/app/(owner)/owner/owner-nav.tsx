@@ -8,7 +8,6 @@ const items = [
   { href: "/owner/onboarding", label: "Onboarding" },
   { href: "/owner/statements", label: "Statements" },
   { href: "/owner/invoices", label: "Invoices" },
-  { href: "/owner/pending", label: "Pending" },
 ];
 
 export function OwnerNav() {
