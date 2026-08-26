@@ -45,11 +45,14 @@ export const buildInvoiceChecklistFn = inngest.createFunction(
       for (const itemId of result.gmailItemIds) {
         await step.sendEvent(
           `gmail-search-${itemId}`,
-          gmailInvoiceSearch.create({
-            clientOrgId: orgId,
-            statementId,
-            itemId,
-          }),
+          gmailInvoiceSearch.create(
+            {
+              clientOrgId: orgId,
+              statementId,
+              itemId,
+            },
+            { id: `gmail-pull-${itemId}` },
+          ),
         );
       }
     }

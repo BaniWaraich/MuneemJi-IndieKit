@@ -1,7 +1,7 @@
 ---
 id: F10
 name: gmail-invoice-pull
-status: SPECCED
+status: IMPLEMENTED
 owners: ["inngest-handler", "db-handler"]
 last_updated: 2026-08-26
 ---
@@ -14,7 +14,7 @@ last_updated: 2026-08-26
 
 ## Status
 
-`SPECCED` (2026-08-26) — approved with the BO invoice-checklist plan. Implementation may begin.
+`IMPLEMENTED` (2026-08-26) — Inngest `gmail-invoice-pull` on `muneem/gmail.invoice-search`; F09 connection-id wrappers; S3 PUT via `putObjectBytes`.
 
 This is **not** D06 (matching engine). F10 does not write `transaction_document_matches` and does not change `bank_transactions.match_status`.
 
@@ -200,8 +200,9 @@ None. Outlook and multi-Gmail **UI** remain out of scope; looping all active con
 
 ## 13. Change Log
 
-| Date       | Change                                                      | By           |
-| ---------- | ----------------------------------------------------------- | ------------ |
-| 2026-08-26 | Initial SPECCED — gated Gmail PDF pull onto checklist items | Bani / agent |
+| Date       | Change                                                                   | By           |
+| ---------- | ------------------------------------------------------------------------ | ------------ |
+| 2026-08-26 | Initial SPECCED — gated Gmail PDF pull onto checklist items              | Bani / agent |
+| 2026-08-26 | IMPLEMENTED — pull job, connection-id Gmail helpers, documents gmail\_\* | Bani / agent |
 
 ---

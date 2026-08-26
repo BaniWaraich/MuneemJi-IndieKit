@@ -167,6 +167,41 @@ export async function downloadAttachment(
   }
 }
 
+async function loadConnectionById(connectionId: string) {
+  return db.query.gmailConnections.findFirst({
+    where: eq(gmailConnections.id, connectionId),
+  });
+}
+
+export async function searchMessagesForConnection(
+  connectionId: string,
+  query: string,
+  opts?: { maxResults?: number; pageToken?: string },
+) {
+  const row = await loadConnectionById(connectionId);
+  if (!row) throw new GmailNotConnectedError();
+  return searchMessages(row.userId, query, opts);
+}
+
+export async function getMessageForConnection(
+  connectionId: string,
+  messageId: string,
+) {
+  const row = await loadConnectionById(connectionId);
+  if (!row) throw new GmailNotConnectedError();
+  return getMessage(row.userId, messageId);
+}
+
+export async function downloadAttachmentForConnection(
+  connectionId: string,
+  messageId: string,
+  attachmentId: string,
+) {
+  const row = await loadConnectionById(connectionId);
+  if (!row) throw new GmailNotConnectedError();
+  return downloadAttachment(row.userId, messageId, attachmentId);
+}
+
 export async function probeGmailAccess(userId: string): Promise<string> {
   const gmail = await gmailForUser(userId);
   try {

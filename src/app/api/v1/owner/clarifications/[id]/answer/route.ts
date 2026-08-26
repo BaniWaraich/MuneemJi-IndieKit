@@ -86,6 +86,7 @@ export async function POST(
 
       if (gmailEligible) {
         await inngest.send({
+          id: `gmail-pull-${item.id}`,
           name: "muneem/gmail.invoice-search",
           data: {
             clientOrgId: session.clientOrgId,
