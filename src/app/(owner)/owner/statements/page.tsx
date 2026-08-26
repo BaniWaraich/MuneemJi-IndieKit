@@ -41,7 +41,7 @@ export default async function OwnerStatementsPage() {
         initial={initial}
         detailHrefPrefix="/owner/statements"
         tone="owner"
-        navigateOnUpload={(id) => `/owner/statements/${id}`}
+        redirectAfterUpload
       />
     </div>
   );

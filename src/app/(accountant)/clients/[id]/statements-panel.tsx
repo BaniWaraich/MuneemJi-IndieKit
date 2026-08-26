@@ -92,13 +92,14 @@ export function StatementsPanel({
   initial,
   detailHrefPrefix = `/clients/${clientOrgId}/statements`,
   tone = "ca",
-  navigateOnUpload,
+  redirectAfterUpload = false,
 }: {
   clientOrgId: string;
   initial: Statement[];
   detailHrefPrefix?: string;
   tone?: "owner" | "ca";
-  navigateOnUpload?: (statementId: string) => string;
+  /** When true, go to `${detailHrefPrefix}/{id}` after a successful upload. */
+  redirectAfterUpload?: boolean;
 }) {
   const router = useRouter();
   const [statements, setStatements] = useState<Statement[]>(initial);
@@ -180,8 +181,8 @@ export function StatementsPanel({
 
       if (fileRef.current) fileRef.current.value = "";
       await refresh();
-      if (navigateOnUpload) {
-        router.push(navigateOnUpload(statementId));
+      if (redirectAfterUpload) {
+        router.push(`${detailHrefPrefix}/${statementId}`);
       }
     } catch (err) {
       setUploadError((err as Error).message);

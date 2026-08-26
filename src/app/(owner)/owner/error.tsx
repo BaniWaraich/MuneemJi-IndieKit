@@ -12,8 +12,7 @@ export default function OwnerError({
         Couldn&apos;t load this page
       </h2>
       <p className="mt-2 text-sm text-neutral-500">
-        Please try again. If this keeps happening after a new deploy, the
-        invoice-checklist tables may not be migrated yet.
+        Please try again. If it keeps happening, refresh or sign in again.
       </p>
       <button
         type="button"
