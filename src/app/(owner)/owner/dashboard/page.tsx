@@ -1,71 +1,36 @@
 import Link from "next/link";
-import { and, desc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import {
-  bankStatements,
-  clientOrgs,
-  invoiceChecklistItems,
-  payeeClarifications,
-} from "@/db/schema/muneem";
+import { clientOrgs } from "@/db/schema/muneem";
 import { getOwnerSession } from "@/lib/auth/tenant";
 import { getGmailStatus } from "@/lib/gmail/status";
-import { summarizeChecklist } from "@/lib/invoice-checklist/summary";
+import { loadLatestParsedChecklistSummary } from "@/lib/invoice-checklist/load-summary";
 import { GmailIntegrationsCard } from "../_components/gmail-integrations-card";
 
 export default async function OwnerDashboard() {
   const session = await getOwnerSession();
   if (!session) return null;
 
-  const [org, gmailStatus, [latest]] = await Promise.all([
+  const [org, gmailStatus, checklist] = await Promise.all([
     db.query.clientOrgs.findFirst({
       where: eq(clientOrgs.id, session.clientOrgId),
     }),
-    getGmailStatus(session.ownerId),
-    db
-      .select({ id: bankStatements.id })
-      .from(bankStatements)
-      .where(
-        and(
-          eq(bankStatements.clientOrgId, session.clientOrgId),
-          eq(bankStatements.status, "parsed"),
-        ),
-      )
-      .orderBy(desc(bankStatements.createdAt))
-      .limit(1),
+    getGmailStatus(session.ownerId).catch((err) => {
+      console.error("OwnerDashboard getGmailStatus", err);
+      return {
+        status: "disconnected" as const,
+        gmailAddress: null,
+        connectedAt: null,
+        lastUsedAt: null,
+      };
+    }),
+    loadLatestParsedChecklistSummary(session.clientOrgId),
   ]);
 
-  let summary = {
-    toCollect: 0,
-    collected: 0,
-    findYourself: 0,
-    quickQuestions: 0,
-  };
-  if (latest) {
-    const [items, pending] = await Promise.all([
-      db
-        .select({
-          status: invoiceChecklistItems.status,
-          documentId: invoiceChecklistItems.documentId,
-          gmailSearchStatus: invoiceChecklistItems.gmailSearchStatus,
-        })
-        .from(invoiceChecklistItems)
-        .where(eq(invoiceChecklistItems.statementId, latest.id)),
-      db
-        .select({ id: payeeClarifications.id })
-        .from(payeeClarifications)
-        .where(
-          and(
-            eq(payeeClarifications.statementId, latest.id),
-            eq(payeeClarifications.status, "pending"),
-          ),
-        ),
-    ]);
-    summary = summarizeChecklist(items, pending.length);
-  }
-
+  const { summary, statementId: latestId } = checklist;
   const gmailOk = gmailStatus.status === "active";
-  const checklistHref = latest
-    ? `/owner/statements/${latest.id}/checklist`
+  const checklistHref = latestId
+    ? `/owner/statements/${latestId}/checklist`
     : "/owner/statements";
 
   return (
@@ -80,7 +45,7 @@ export default async function OwnerDashboard() {
         </p>
       </div>
 
-      {(!gmailOk || !latest) && (
+      {(!gmailOk || !latestId) && (
         <div className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
           <h3 className="text-base font-medium text-neutral-900">
             Get started

@@ -22,7 +22,7 @@ interface WithManagerHandler {
       getCurrentPlan: () => Promise<MeResponse["currentPlan"]>;
       getUser: () => Promise<MeResponse["user"]>;
       params: Promise<Record<string, unknown>>;
-    }
+    },
   ): Promise<NextResponse | Response>;
 }
 
@@ -31,7 +31,7 @@ const withAuthRequired = (handler: WithManagerHandler) => {
     req: NextRequest,
     context: {
       params: Promise<Record<string, unknown>>;
-    }
+    },
   ) => {
     const session = await auth();
 
@@ -41,7 +41,7 @@ const withAuthRequired = (handler: WithManagerHandler) => {
           error: "Unauthorized",
           message: "You are not authorized to perform this action",
         },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -49,14 +49,8 @@ const withAuthRequired = (handler: WithManagerHandler) => {
 
     const getCurrentPlan = async () => {
       const user = await db.select().from(users).where(eq(users.id, userId));
-
-      if (!user) {
-        return null;
-      }
-
-      // Get the current plan and quotas
-
-      if (!user[0].planId) {
+      const row = user[0];
+      if (!row?.planId) {
         return null;
       }
 
@@ -69,7 +63,7 @@ const withAuthRequired = (handler: WithManagerHandler) => {
           default: plans.default,
         })
         .from(plans)
-        .where(eq(plans.id, user[0].planId));
+        .where(eq(plans.id, row.planId));
 
       if (!currentPlan.length) {
         return null;
