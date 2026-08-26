@@ -37,6 +37,10 @@ export function periodLabelFromTxs(txs: BankTxLike[]): string {
   return first ? periodFromDate(first) : "";
 }
 
+export function periodLabelFromIso(iso: string | null | undefined): string {
+  return iso ? periodFromDate(iso) : "";
+}
+
 function debitMagnitude(amountMinor: bigint): bigint {
   return amountMinor < 0n ? -amountMinor : amountMinor;
 }

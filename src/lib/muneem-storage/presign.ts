@@ -2,6 +2,8 @@ import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { isS3Configured, s3Client, s3Bucket } from "./s3";
 
+export { isS3Configured };
+
 export class StorageNotConfiguredError extends Error {
   constructor() {
     super("STORAGE_NOT_CONFIGURED");
@@ -30,6 +32,9 @@ export async function presignGet(
   key: string,
   expiresSec = 900,
 ): Promise<string> {
+  if (!isS3Configured()) {
+    throw new StorageNotConfiguredError();
+  }
   const cmd = new GetObjectCommand({ Bucket: s3Bucket, Key: key });
   return getSignedUrl(s3Client, cmd, { expiresIn: expiresSec });
 }
