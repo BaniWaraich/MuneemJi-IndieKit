@@ -316,7 +316,7 @@ export const statementParseLog = pgTable("statement_parse_log", {
     () => bankParserScripts.id,
   ),
   parseMethod: text("parse_method", {
-    enum: ["pdfplumber_cached", "pdfplumber_new", "csv_direct"],
+    enum: ["pdfplumber_cached", "pdfplumber_new", "pdf_vision", "csv_direct"],
   }).notNull(),
   balanceCheckPass: boolean("balance_check_pass").notNull(),
   transactionsFound: integer("transactions_found").notNull(),

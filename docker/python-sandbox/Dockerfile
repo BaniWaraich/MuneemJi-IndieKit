@@ -10,7 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py /app/server.py
 COPY extract-pages.py /app/extract-pages.py
-RUN chmod 0644 /app/server.py /app/extract-pages.py \
+COPY classify_page.py /app/classify_page.py
+COPY render_page.py /app/render_page.py
+RUN chmod 0644 /app/server.py /app/extract-pages.py /app/classify_page.py /app/render_page.py \
  && mkdir -p /work && chown 1500:1500 /work
 
 USER 1500:1500

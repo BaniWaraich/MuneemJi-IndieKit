@@ -3,7 +3,7 @@ id: D02
 name: statement-format-extraction
 status: IMPLEMENTED
 owners: [inngest, schema]
-last_updated: 2026-06-02
+last_updated: 2026-08-27
 ---
 
 # D02 — Statement Format Extraction
@@ -14,15 +14,15 @@ last_updated: 2026-06-02
 
 ## Status
 
-`IMPLEMENTED` (2026-06-02) — Inngest function `inngest/functions/statement-extract.ts` is the D02 worker, triggered by `muneem/statement.uploaded`. Both PDF and CSV paths end at `bank_statements.phase1_markdown` + `status='phase1_complete'|'empty'|'failed'` + one `statement_parse_log` row + (on success and non-empty) `muneem/statement.extracted` event to trigger D03.
+`IMPLEMENTED` (2026-06-02; scanned-PDF path 2026-08-27) — Inngest function `inngest/functions/statement-extract.ts` is the D02 worker, triggered by `muneem/statement.uploaded`. PDF path: sandbox classifies each page as `text` / `scanned` / `blank` → GPT-4o mini on text pages → GPT-4o vision on scanned pages (one Inngest step per vision page) → merge + balance. CSV path unchanged. Both paths end at `bank_statements.phase1_markdown` + `status='phase1_complete'|'empty'|'failed'` + one `statement_parse_log` row + (on success and non-empty) `muneem/statement.extracted` event to trigger D03.
 
-**Architecture pivot from original spec:** The original design generated pdfplumber Python scripts via Claude Opus and cached them per `(firm_id, bank_identifier)`. This was removed as too fragile. The current approach uses pdfplumber (via a baked-in `extract-pages.py` sandbox script) to extract raw whitespace-layout text per page, then sends each page's text to GPT-4o mini for transaction extraction. This is more robust across format variations. `bank_parser_scripts`, `identify-bank.ts`, `script-cache.ts`, `run-pdfplumber.ts`, and `rate-limit.ts` were all removed as part of this pivot.
+**Architecture pivot from original spec:** The original design generated pdfplumber Python scripts via Claude Opus and cached them per `(firm_id, bank_identifier)`. This was removed as too fragile. Native-text pages use pdfplumber layout text + GPT-4o mini. Image-only / scanned pages are rasterized by `/render-page` (pypdfium2) and read by GPT-4o vision. `bank_parser_scripts`, `identify-bank.ts`, `script-cache.ts`, `run-pdfplumber.ts`, and `rate-limit.ts` were all removed as part of the 2026-06 pivot.
 
 ---
 
 ## 1. Purpose
 
-Bank statements arrive in dozens of formats — every Indian, Canadian, and Irish bank uses a different PDF layout, and CSVs vary wildly in preamble length and column ordering. Without a uniform intermediate representation, every downstream consumer (D03, the day-book export, future reporting) would have to handle that variability. D02 absorbs all the format-specific complexity — pdfplumber page-text extraction, multi-page chunking, LLM page interpretation, CSV preamble skipping — and emits a single canonical shape: Markdown frontmatter for statement metadata + one Markdown block per transaction. After D02, no module ever sees the raw PDF or CSV again.
+Bank statements arrive in dozens of formats — every Indian, Canadian, and Irish bank uses a different PDF layout, and CSVs vary wildly in preamble length and column ordering. Without a uniform intermediate representation, every downstream consumer (D03, the day-book export, future reporting) would have to handle that variability. D02 absorbs all the format-specific complexity — pdfplumber page-text extraction, scanned-page classification, JPEG rasterization, multi-page chunking, LLM/vision page interpretation, CSV preamble skipping — and emits a single canonical shape: Markdown frontmatter for statement metadata + one Markdown block per transaction. After D02, no module ever sees the raw PDF or CSV again.
 
 ---
 
@@ -105,14 +105,30 @@ extraction_confidence: 0.75
 
 A scalar in `[0.0, 1.0]` summarising D02's trust in the extraction. D03 uses it to weight ambiguous-row reasoning. **Current heuristics:**
 
-| Path                                                           | Base  | Notes                                                          |
-| -------------------------------------------------------------- | ----- | -------------------------------------------------------------- |
-| PDF, GPT-4o mini per-page, balance validation passed           | 0.75  | LLM per-page extraction — good but can miss continuation rows  |
-| CSV, GPT-4o mini, balance validation passed                    | 0.75  | LLM-extracted preamble can drift; same confidence as PDF path  |
-| any path, balance validation skipped (reconciling adjustments) | −0.20 | applied as penalty to base                                     |
-| any path, bank not identified (`bank_identifier IS NULL`)      | −0.10 | always applies in current implementation (bank ID is deferred) |
+| Path                                                        | Base  | Notes                                                          |
+| ----------------------------------------------------------- | ----- | -------------------------------------------------------------- |
+| PDF, GPT-4o mini per-page (text), balance validation passed | 0.80  | `pdfplumber_new_first_try`; −0.10 unknown bank → 0.70          |
+| PDF, any page used GPT-4o vision, balance validation passed | 0.65  | `pdf_vision` / mixed; −0.10 unknown bank → 0.55                |
+| CSV, GPT-4o mini, balance validation passed                 | 0.75  | LLM-extracted preamble can drift                               |
+| any path, bank not identified (`bank_identifier IS NULL`)   | −0.10 | always applies in current implementation (bank ID is deferred) |
 
 Confidence values are clamped to `[0.0, 1.0]` after penalties.
+
+### 2.3 Page classification (scanned vs text)
+
+Source of truth: sandbox `classify_page.py` (pdfplumber `page.chars` + image bboxes). Node does not re-implement the heuristic except as a deploy-skew fallback when `kind` is missing (`alnum(text) < 80` → `scanned`).
+
+Signals per page: `char_count`, `alnum_count`, `word_count`, `image_area_ratio` (union of image bboxes / page area, clamped to `[0, 1]`).
+
+| kind      | Rule                                                                         | Downstream                       |
+| --------- | ---------------------------------------------------------------------------- | -------------------------------- |
+| `blank`   | `alnum_count < 20` AND `image_area_ratio < 0.08`                             | Skip mini and vision             |
+| `scanned` | (`image_area_ratio >= 0.40` AND `alnum_count < 400`) OR (`alnum_count < 80`) | GPT-4o vision via `/render-page` |
+| `text`    | everything else                                                              | GPT-4o mini on layout text       |
+
+**Salvage:** after the text LLM, a `text` page with **zero** transactions AND `image_area_ratio >= 0.25` is treated as scanned and sent to vision.
+
+**Vision page cap:** `scanned + salvage` > 40 → `VisionPageCapError`, statement `failed`, no GPT-4o loop. Searchable OCR scans with a real text layer stay on the text path on purpose.
 
 ---
 
@@ -123,9 +139,11 @@ D02 runs as an Inngest function consuming `muneem/statement.uploaded` events. Th
 - **Producer:** D01 (`bank-statement-upload`) sends `muneem/statement.uploaded` with `{ data: { statementId } }` after the confirm route verifies the S3 PUT and transitions the `bank_statements` row to `processing`.
 - **Consumer:** `inngest/functions/statement-extract.ts` — function id `muneem-statement-extract`.
 - **Retries:** Inngest default retry policy (up to 4 retries with exponential backoff).
-- **Pre-flight gates checked at step start:**
+- **Pre-flight gates checked at `load-statement`:**
   1. Resolve `firm_id` via `client_orgs` join. Required for tenant-scoped logging.
-  2. Fetch `bank_statements` row; verify `status === 'processing'`. Any other status → no-op (idempotency guard).
+  2. Fetch `bank_statements` row; verify `status === 'processing'` or `'unlocking'`. Any other status → no-op (idempotency guard).
+
+PDF Inngest steps (each gets a fresh ~60s Hobby budget): `load-statement` → `extract-pages` → `parse-text-pages` → `vision-page-{n}` (scanned/salvage only; step return is transaction JSON, never JPEG) → `finalize-pdf` → `step.sendEvent` `muneem/statement.extracted`. Encrypted PDFs return from `extract-pages` as a discriminant and `mark-password-required` without throwing (no retry). CSV remains a single `extract-csv` step.
 
 D02 never receives an HTTP request, never returns an HTTP response, and never imports from `app/api/`.
 
@@ -193,7 +211,7 @@ The two HTTP routes that _interact_ with D02's outputs are owned by other module
 ## 7. Correctness Rules
 
 1. **Tenant isolation.** Every DB read and write includes `client_org_id` or `firm_id`. No cross-tenant data flow.
-2. **Sandbox isolation.** The only Python script executed by the sandbox (`extract-pages.py`) is baked into the sandbox image. No LLM-generated code is executed — the arbitrary-code `/extract` endpoint was removed. The sandbox runs non-root, drops the PDF immediately after each parse (stateless), caps bodies at 10 MB, kills the subprocess after 30s, and requires a `Bearer <PARSER_SECRET>` header on every request except `/healthz`.
+2. **Sandbox isolation.** The only Python scripts executed by the sandbox (`extract-pages.py`, `render_page.py`, `classify_page.py`) are baked into the sandbox image. No LLM-generated code is executed. The sandbox runs non-root, drops the PDF immediately after each parse (stateless), caps decoded PDFs at 25 MB (HTTP body 36 MB to match D01), kills extract after 45s / render after 20s, and requires a `Bearer <PARSER_SECRET>` header on every request except `/healthz`. JPEG bytes are never logged.
 3. **Balance must reconcile.** `opening_balance + Σcredits − Σdebits = closing_balance` within 1 paise tolerance. On failure: statement is marked `failed`. There is no regen cycle (old script-caching concept) — balance failure is terminal.
 4. **Money is BIGINT.** All amount fields in the Markdown KV are integer paise/cents. Conversion from major units (LLM returns "4500.00") to minor units (`450000`) is `Math.round(major * 100)`, applied at rendering time.
 5. **One side per row.** Exactly one of `debit_minor` / `credit_minor` is non-zero per transaction. If extraction returns both non-null, D02 throws `KvIntegrityError`.
@@ -206,17 +224,17 @@ The two HTTP routes that _interact_ with D02's outputs are owned by other module
 
 ## 8. LLM Usage
 
-D02 makes LLM calls in two distinct paths. Both are followed by deterministic post-processing inside D02 (Markdown KV rendering, balance validation) — the LLMs never produce the final output directly.
+D02 makes LLM calls in three distinct paths. All are followed by deterministic post-processing inside D02 (Markdown KV rendering, balance validation) — the LLMs never produce the final output directly. Page JPEGs are never persisted (not in Inngest step output, S3, or Postgres).
 
-### 8.1 GPT-4o mini — PDF per-page transaction extraction (PDF path)
+### 8.1 GPT-4o mini — PDF per-page transaction extraction (`kind=text`)
 
 - **Provider / model:** OpenAI `gpt-4o-mini`.
-- **When invoked:** PDF path, once per page of the PDF. Pages are processed with controlled concurrency (up to 4 in parallel).
-- **Frequency:** Once per page per PDF statement. A 5-page statement = 5 LLM calls.
-- **Inputs:** ~1,000–3,000 tokens per page (raw whitespace-layout text extracted by the baked-in `extract-pages.py` sandbox script via `/extract-pages`).
-- **Output:** JSON object per page: `{ currency, transactions: [...] }`. Code-fenced markdown is stripped via `extractCodeBlock`. Schema-validated via Zod.
-- **Temperature, timeout:** `temperature: 0`, `timeout: 180,000` ms (across all pages).
-- **Retries / fallback:** Two attempts per statement (Inngest retries). On second failure → `PdfLlmParseError` → statement marked `failed`.
+- **When invoked:** PDF path, once per page with `kind=text`. Blank and scanned pages are skipped. Pages processed with concurrency 4 inside the `parse-text-pages` step.
+- **Frequency:** Once per text page per PDF statement.
+- **Inputs:** ~1,000–3,000 tokens per page (raw whitespace-layout text from `/extract-pages`).
+- **Output:** JSON object per page: `{ currency, transactions: [...] }`. Schema-validated via Zod.
+- **Temperature, timeout:** `temperature: 0`, `timeout: 180,000` ms (text-page group).
+- **Retries / fallback:** Two attempts per page. On second failure → `PdfLlmParseError` → Inngest retries the `parse-text-pages` step.
 
 **System prompt (current — `lib/statement-parser/pdf-llm-parser.ts`):**
 
@@ -239,7 +257,16 @@ The prompt instructs the model to treat whitespace-separated columns as the fiel
 }
 ```
 
-Pages are merged in order; duplicate rows at page boundaries are deduplicated by D02 before rendering.
+Pages are merged in statement order with vision results (vision overwrites salvage pages).
+
+### 8.1b GPT-4o vision — scanned / salvage pages
+
+- **Provider / model:** OpenAI `gpt-4o` (`detail: "high"`). Not `gpt-4o-mini`.
+- **When invoked:** one Inngest step `vision-page-{n}` per scanned or salvage page. Each step: S3 download → `POST /render-page` JPEG (long edge 2048, quality 75) → vision. Step **return value is transaction JSON only**.
+- **Frequency:** Once per scanned/salvage page, capped at 40.
+- **Output:** Same Zod schema as §8.1.
+- **Temperature, timeout:** `temperature: 0`, `timeout: 45,000` ms per page.
+- **Retries / fallback:** Two attempts per page, then `PdfVisionParseError`. Native-text PDFs never call `/render-page` or `gpt-4o`.
 
 ### 8.2 GPT-4o mini — CSV transaction-table extraction (CSV path, every statement)
 
@@ -298,13 +325,14 @@ Rules:
 
 ## 9. Economics
 
-| Component                    | Per unit   | Frequency         | Notes                                                                 |
-| ---------------------------- | ---------- | ----------------- | --------------------------------------------------------------------- |
-| GPT-4o mini PDF extraction   | ~$0.002    | per PDF statement | ~3,000–8,000 in @ $0.15/M + ~500–2,000 out @ $0.60/M across all pages |
-| GPT-4o mini CSV extraction   | ~$0.001    | per CSV statement | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M                            |
-| pdfplumber sandbox execution | ~$0.001    | per PDF statement | ECS Fargate compute, ~5–15s                                           |
-| S3 download                  | negligible | per statement     |                                                                       |
-| Markdown KV write (Postgres) | negligible | per statement     | one TEXT column update                                                |
+| Component                    | Per unit    | Frequency                       | Notes                                                                  |
+| ---------------------------- | ----------- | ------------------------------- | ---------------------------------------------------------------------- |
+| GPT-4o mini PDF extraction   | ~$0.002     | per text-page PDF               | ~3,000–8,000 in @ $0.15/M + ~500–2,000 out @ $0.60/M across text pages |
+| GPT-4o vision (high detail)  | ~$0.01–0.03 | per scanned page                | Image tokens dominate; cap 40 pages                                    |
+| GPT-4o mini CSV extraction   | ~$0.001     | per CSV statement               | ~2,500 in @ $0.15/M + ~1,200 out @ $0.60/M                             |
+| pdfplumber sandbox execution | ~$0.001     | per PDF statement               | Cloud Run; extract-pages + one render-page per scanned page            |
+| S3 download                  | negligible  | per statement + per vision page | Vision steps re-download; no JPEG stored                               |
+| Markdown KV write (Postgres) | negligible  | per statement                   | one TEXT column update                                                 |
 
 **Watch metrics:**
 
@@ -315,18 +343,22 @@ Rules:
 
 ## 10. Failure Modes
 
-| Failure                       | Trigger                                                                           | Impact                                          | Severity | Recovery                                                     |
-| ----------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------- | -------- | ------------------------------------------------------------ |
-| `S3DownloadError` (NoSuchKey) | Object missing or deleted before D02 download                                     | Statement marked `failed` immediately, no retry | high     | Manual re-upload required                                    |
-| `S3DownloadError` (network)   | Transient S3 error                                                                | Inngest retries with backoff                    | medium   | Self-resolves on retry                                       |
-| `NotAPdfNorCsvError`          | Magic-byte check fails (not `%PDF-`, no CSV signature)                            | Statement marked `failed`                       | medium   | User re-uploads correct file                                 |
-| `SandboxUnavailableError`     | `PYTHON_SANDBOX_URL` unreachable                                                  | All PDF statements fail until sandbox returns   | critical | Container restart policy + alerting (F08)                    |
-| `SandboxTimeoutError`         | `extract-pages.py` ran >30s (sandbox kill) or >60s (client abort)                 | One statement fails; sandbox kills subprocess   | medium   | Inngest retry                                                |
-| `PdfLlmParseError`            | GPT-4o mini returns malformed JSON or schema mismatch on both attempts            | Statement fails this attempt                    | medium   | Inngest retries the whole job                                |
-| `CsvLlmParseError`            | GPT-4o mini returns malformed JSON or schema mismatch on both attempts            | Statement fails this attempt                    | medium   | Inngest retries the whole job                                |
-| `BalanceValidationError`      | Endpoint check fails after extraction                                             | Terminal — statement marked `failed`            | high     | CA re-uploads; engineering reviews parse log for pattern     |
-| `CurrencyMismatchError`       | Extracted currency ≠ `bank_statements.currency` from upload                       | Statement marked `failed`                       | medium   | Indicates upload-time metadata bug or wrong-statement upload |
-| `KvIntegrityError`            | `transaction_count` ≠ count of blocks, or both debit and credit non-zero on a row | Statement marked `failed`                       | high     | Indicates a D02 code bug — Sentry alerts on this             |
+| Failure                       | Trigger                                                                             | Impact                                          | Severity | Recovery                                                     |
+| ----------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------- | -------- | ------------------------------------------------------------ |
+| `S3DownloadError` (NoSuchKey) | Object missing or deleted before D02 download                                       | Statement marked `failed` immediately, no retry | high     | Manual re-upload required                                    |
+| `S3DownloadError` (network)   | Transient S3 error                                                                  | Inngest retries with backoff                    | medium   | Self-resolves on retry                                       |
+| `NotAPdfNorCsvError`          | Magic-byte check fails (not `%PDF-`, no CSV signature)                              | Statement marked `failed`                       | medium   | User re-uploads correct file                                 |
+| `SandboxUnavailableError`     | `PYTHON_SANDBOX_URL` unreachable                                                    | All PDF statements fail until sandbox returns   | critical | Container restart policy + alerting (F08)                    |
+| `SandboxTimeoutError`         | `extract-pages.py` ran >45s or `render_page.py` >20s (sandbox kill) or client abort | One statement/page fails                        | medium   | Inngest retry of that step                                   |
+| `PdfLlmParseError`            | GPT-4o mini returns malformed JSON or schema mismatch on both attempts              | `parse-text-pages` step fails                   | medium   | Inngest retries the step                                     |
+| `PdfVisionParseError`         | GPT-4o vision malformed JSON / schema mismatch on both attempts                     | `vision-page-N` step fails                      | medium   | Inngest retries that page                                    |
+| `VisionPageCapError`          | scanned + salvage pages > 40                                                        | Terminal `failed`; no gpt-4o loop               | medium   | Split/re-upload or raise cap after review                    |
+| `CsvLlmParseError`            | GPT-4o mini returns malformed JSON or schema mismatch on both attempts              | Statement fails this attempt                    | medium   | Inngest retries the whole job                                |
+| `PdfMergeError`               | Zero transactions after text+vision merge, or no printable balance                  | Terminal `failed`                               | medium   | Inspect file; scanned-with-no-table vs true extract miss     |
+| `BalanceValidationError`      | Endpoint check fails after extraction                                               | Terminal — statement marked `failed`            | high     | CA re-uploads; engineering reviews parse log for pattern     |
+| `CurrencyMismatchError`       | Extracted currency ≠ `bank_statements.currency` from upload                         | Statement marked `failed`                       | medium   | Indicates upload-time metadata bug or wrong-statement upload |
+| `KvIntegrityError`            | `transaction_count` ≠ count of blocks, or both debit and credit non-zero on a row   | Statement marked `failed`                       | high     | Indicates a D02 code bug — Sentry alerts on this             |
+| Sandbox 413                   | Request body > 36 MB or decoded PDF > 25 MB                                         | Extract/render rejected                         | medium   | Aligns with D01 25 MB upload cap                             |
 
 **Statement marked `empty`** is not a failure. It is a terminal success state: D02 extracted zero transactions. The CA is notified to investigate the file. D03 is **not** triggered for empty statements.
 
@@ -346,8 +378,8 @@ Rules:
 **External services:**
 
 - AWS S3 / MinIO — object storage for raw uploads.
-- Python sandbox (Docker) — `PYTHON_SANDBOX_URL`; endpoints `GET /healthz` and `POST /extract-pages` only. Hosted on **Google Cloud Run** (scale-to-zero); local dev runs it via `docker-compose`. Every request except `/healthz` requires `Authorization: Bearer <PARSER_SECRET>` (shared secret in both the sandbox env and Vercel/Next.js env). Owned at infra layer; D02 is the only consumer.
-- OpenAI API — GPT-4o mini for both PDF per-page extraction and CSV extraction.
+- Python sandbox (Docker) — `PYTHON_SANDBOX_URL`; endpoints `GET /healthz`, `POST /extract-pages`, `POST /render-page`. Hosted on **Google Cloud Run** (scale-to-zero); local dev runs it via `docker-compose`. Every request except `/healthz` requires `Authorization: Bearer <PARSER_SECRET>`. Decode cap 25 MB PDF / 36 MB HTTP body. D02 is the only consumer. **Redeploy the sandbox image before the Next.js change.**
+- OpenAI API — GPT-4o mini for text PDF pages and CSV; GPT-4o vision for scanned/salvage pages.
 - PostgreSQL — Drizzle ORM client.
 - Inngest — event bus and job retry infrastructure.
 
@@ -356,12 +388,16 @@ Rules:
 - `src/lib/inngest/functions/statement-extract.ts` — D02 Inngest function
 - `src/lib/statement-parser/sandbox-client.ts`
 - `src/lib/statement-parser/pdf-llm-parser.ts`
+- `src/lib/statement-parser/pdf-vision-parser.ts`
+- `src/lib/statement-parser/pdf-page-merge.ts`
+- `src/lib/statement-parser/extracted-pages.ts`
+- `src/lib/statement-parser/page-schema.ts`
 - `src/lib/statement-parser/csv-llm-parser.ts`
 - `src/lib/statement-parser/validate-balance.ts`
 - `src/lib/statement-parser/extract-code-block.ts`
 - `src/lib/statement-parser/render-markdown-kv.ts` — deterministic Markdown KV renderer
 - `src/lib/statement-parser/types.ts` — shared extraction types
-- `docker/python-sandbox/**` — sandbox image; `extract-pages.py` is the sole baked-in extraction script for PDFs. Hosted on Cloud Run; Bearer-secret gated. (`extract-text.py` and the `/extract` arbitrary-code endpoint were removed.)
+- `docker/python-sandbox/**` — sandbox image; `extract-pages.py`, `classify_page.py`, `render_page.py` (pypdfium2 + Pillow). Bearer-secret gated.
 
 **Files removed in the architecture pivot (no longer exist):**
 
@@ -380,7 +416,8 @@ Rules:
 4. **Page-boundary deduplication.** Some banks repeat the last row of a page as the first row of the next page (running total row). Current deduplication logic uses date+amount+description hash; needs alpha data to confirm it handles all edge cases.
 5. **Manual override for legitimate balance mismatches.** Some statements have reconciling items (adjustments, charges not shown as rows) that will never satisfy `opening + credits − debits = closing`. A `skip_balance_check` flag exposed only in the CA admin UI is out of scope for alpha — such statements are marked `failed` and CA support handles manually. Re-evaluate before Track 2.
 6. **Markdown KV size.** A 200-row statement renders to ~25 KB of Markdown. PostgreSQL TEXT handles this trivially; D03's LLM prompt will fit. If statements exceed ~1,000 rows, may need to chunk for D03's context window. Defer until observed.
-7. **`runInSandbox` dead code — RESOLVED (2026-06-02).** `runInSandbox` (the old LLM-generated `/extract` path) and `extractHeaderText` (`/extract-header`) were removed from `sandbox-client.ts`, along with the corresponding server endpoints and `extract-text.py`. `sandbox-client.ts` now exports only `extractPdfPages`.
+7. **`runInSandbox` dead code — RESOLVED (2026-06-02).** `runInSandbox` (the old LLM-generated `/extract` path) and `extractHeaderText` (`/extract-header`) were removed from `sandbox-client.ts`. `sandbox-client.ts` now exports `extractPdfPages` and `renderPdfPage`.
+8. **Text-page Inngest decomposition.** Vision pages are one step each. Grouped `parse-text-pages` can still approach the 60s Hobby cap on very long native-text statements — same follow-up as 2026-06-03, not required for scanned support.
 
 ---
 
@@ -392,3 +429,4 @@ Rules:
 | 2026-06-02 | Rewrote to match actual implementation. Removed pdfplumber script-generation architecture (Opus, `bank_parser_scripts`, `identify-bank.ts`, `script-cache.ts`, `run-pdfplumber.ts`, `rate-limit.ts`). Updated to per-page GPT-4o mini PDF extraction + Inngest event bus. `bank_identifier` noted as deferred. Status → `IMPLEMENTED`.                                                                                                                                                                                    | Bani / Claude |
 | 2026-06-02 | Deployed the Python sandbox to **Google Cloud Run** (was Vercel-only → PDF parsing failed in prod). Hardened the service: removed the `/extract` (arbitrary-code) and `/extract-header` endpoints + `extract-text.py`; `sandbox-client.ts` exports only `extractPdfPages`. Added `Bearer <PARSER_SECRET>` auth, 10 MB body cap, 30s subprocess timeout, `$PORT`, stateless logging. Fixed local `docker-compose` port (8080) and removed dead `SCRIPT_GEN_*` env vars.                                                    | Bani / Claude |
 | 2026-06-03 | Added `onFailure` so a statement killed by the Vercel Hobby ~60s function cap surfaces as `failed` instead of silently sitting at `processing`. **Known limitation:** D02 still runs sandbox extraction + per-page LLM in a single `step.run`, so large multi-page PDFs can exceed 60s on Hobby. Full per-page Inngest-step decomposition (mirroring D03's 2026-06-03 fix) is a tracked follow-up — deferred to avoid regressing the working multi-page merge/balance path. Route `maxDuration` set to 60 to match Hobby. | Bani / Claude |
+| 2026-08-27 | Scanned-PDF path: sandbox classifies pages (`text`/`scanned`/`blank`); `/render-page` JPEGs via pypdfium2; GPT-4o vision (`detail: high`) per scanned/salvage page as its own Inngest step (no JPEG in step output). Text pages stay GPT-4o mini. Vision cap 40. Sandbox body cap 25 MB PDF / 36 MB HTTP. `parse_method`/`extraction_method` gain `pdf_vision`.                                                                                                                                                           | Bani / Cursor |

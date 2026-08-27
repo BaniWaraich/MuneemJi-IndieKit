@@ -1,13 +1,17 @@
 """Python sandbox HTTP service.
 
-Executes the baked-in extract-pages.py against an uploaded bank-statement PDF,
-isolated from the Node worker process:
+Executes baked-in scripts against an uploaded bank-statement PDF, isolated
+from the Node worker process:
 - Non-root UID 1500, read-only rootfs, tmpfs /work, dropped capabilities.
 - env={} passed to the subprocess so no secrets leak into executed code.
-- No LLM-generated code is ever accepted — only the baked-in script runs.
+- No LLM-generated code is ever accepted — only the baked-in scripts run.
 
 Hosted on Google Cloud Run (publicly reachable), so every request must carry
 `Authorization: Bearer <PARSER_SECRET>`. /healthz is the only exempt route.
+
+Endpoints:
+- POST /extract-pages — text + scanned/text/blank classification per page
+- POST /render-page — JPEG raster of a single page for GPT-4o vision
 """
 import base64
 import binascii
@@ -22,25 +26,27 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request
 
+# 25 MB decoded PDF (D01 cap) * 4/3 base64 + JSON wrapper ≈ 36 MB.
+MAX_PDF_BYTES = 25 * 1024 * 1024
+MAX_BODY_BYTES = 36 * 1024 * 1024
+
 app = Flask(__name__)
-# HTTP-layer reject: bodies (base64 PDF) larger than 10 MB never reach a handler.
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 
 PYTHON_BIN = sys.executable
 WORK_ROOT = "/work"
 PAGES_SCRIPT = "/app/extract-pages.py"
-MAX_PDF_BYTES = 10 * 1024 * 1024
-PAGES_TIMEOUT_S = 30
+RENDER_SCRIPT = "/app/render_page.py"
+PAGES_TIMEOUT_S = 45
+RENDER_TIMEOUT_S = 20
 
-# Required shared secret. Read once at startup; a missing value is fatal so the
-# service can never come up unauthenticated.
 PARSER_SECRET = os.environ.get("PARSER_SECRET")
 if not PARSER_SECRET:
     sys.exit("PARSER_SECRET is not set — refusing to start unauthenticated")
 
 
 def _log(job_id: str, status: str, duration_ms: int, **extra) -> None:
-    """Structured one-line log. Never includes PDF bytes or extracted text."""
+    """Structured one-line log. Never includes PDF bytes, JPEG, or passwords."""
     print(
         json.dumps(
             {"jobId": job_id, "status": status, "durationMs": duration_ms, **extra}
@@ -79,9 +85,74 @@ def _run(cmd: list[str], cwd: str, timeout: int) -> dict:
     }
 
 
+def _password_from_body(body: dict) -> str | None:
+    raw_password = body.get("password")
+    if isinstance(raw_password, str) and raw_password:
+        return raw_password
+    return None
+
+
+def _run_pdf_script(
+    *,
+    script: str,
+    extra_args: list[str],
+    timeout_s: int,
+    job_id: str,
+    pdf_b64: str,
+    password: str | None,
+    log_ok: str,
+):
+    started = time.monotonic()
+    try:
+        pdf_bytes = _decode_pdf(pdf_b64)
+    except ValueError as exc:
+        _log(job_id, "rejected", int((time.monotonic() - started) * 1000))
+        return jsonify({"error": str(exc)}), 400
+
+    workdir = tempfile.mkdtemp(prefix="pages-", dir=WORK_ROOT)
+    pdf_path = Path(workdir) / "input.pdf"
+    try:
+        pdf_path.write_bytes(pdf_bytes)
+        cmd = [PYTHON_BIN, script, str(pdf_path), *extra_args]
+        if password is not None:
+            cmd.append(password)
+        try:
+            result = _run(cmd, cwd=workdir, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            _log(job_id, "timeout", int((time.monotonic() - started) * 1000))
+            return jsonify({"error": "timeout", "timeoutSeconds": timeout_s}), 504
+
+        exit_code = result["exitCode"]
+        if exit_code == 2:
+            _log(job_id, "encrypted", int((time.monotonic() - started) * 1000))
+            return jsonify({"error": "encrypted", "requiresPassword": True}), 422
+        if exit_code == 3:
+            _log(job_id, "wrong_password", int((time.monotonic() - started) * 1000))
+            return (
+                jsonify({"error": "wrong_password", "requiresPassword": True}),
+                422,
+            )
+
+        _log(
+            job_id,
+            log_ok if exit_code == 0 else "error",
+            int((time.monotonic() - started) * 1000),
+            exitCode=exit_code,
+        )
+        return jsonify(result)
+    finally:
+        try:
+            pdf_path.unlink()
+        except OSError:
+            pass
+        try:
+            os.rmdir(workdir)
+        except OSError:
+            pass
+
+
 @app.before_request
 def _require_bearer():
-    """Gate every route except the health check behind the shared secret."""
     if request.path == "/healthz":
         return None
     header = request.headers.get("Authorization", "")
@@ -98,79 +169,46 @@ def healthz():
 
 @app.post("/extract-pages")
 def extract_pages():
-    """Run the baked-in extract-pages.py — no LLM code accepted.
-
-    Optional request field "password" unlocks an encrypted PDF. The password
-    is passed straight to the subprocess as argv[2] and is NEVER written to a
-    log line (see _log, which only ever receives jobId/status/timing/exitCode).
-    """
-    started = time.monotonic()
+    """Run extract-pages.py — text + kind/signals. No images in the payload."""
     body = request.get_json(silent=True) or {}
     job_id = str(body.get("jobId") or uuid.uuid4().hex[:12])
-    pdf_b64 = body.get("pdfBase64")
-    # Optional. Coerce to str so a non-string never reaches the CLI; empty /
-    # missing means "no password supplied" (extract-pages.py exit 2 path).
-    raw_password = body.get("password")
-    password = raw_password if isinstance(raw_password, str) and raw_password else None
+    return _run_pdf_script(
+        script=PAGES_SCRIPT,
+        extra_args=[],
+        timeout_s=PAGES_TIMEOUT_S,
+        job_id=job_id,
+        pdf_b64=body.get("pdfBase64"),
+        password=_password_from_body(body),
+        log_ok="ok",
+    )
+
+
+@app.post("/render-page")
+def render_page():
+    """Rasterize one page to JPEG. Request field `page` is 1-based."""
+    body = request.get_json(silent=True) or {}
+    job_id = str(body.get("jobId") or uuid.uuid4().hex[:12])
+    raw_page = body.get("page")
     try:
-        pdf_bytes = _decode_pdf(pdf_b64)
-    except ValueError as exc:
-        _log(job_id, "rejected", int((time.monotonic() - started) * 1000))
-        return jsonify({"error": str(exc)}), 400
-
-    workdir = tempfile.mkdtemp(prefix="pages-", dir=WORK_ROOT)
-    pdf_path = Path(workdir) / "input.pdf"
-    try:
-        pdf_path.write_bytes(pdf_bytes)
-        cmd = [PYTHON_BIN, PAGES_SCRIPT, str(pdf_path)]
-        if password is not None:
-            cmd.append(password)
-        try:
-            result = _run(
-                cmd,
-                cwd=workdir,
-                timeout=PAGES_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
-            _log(job_id, "timeout", int((time.monotonic() - started) * 1000))
-            return jsonify({"error": "timeout", "timeoutSeconds": PAGES_TIMEOUT_S}), 504
-
-        exit_code = result["exitCode"]
-
-        # Encryption signals from extract-pages.py. The password never appears
-        # in this log line or the response body.
-        if exit_code == 2:
-            _log(job_id, "encrypted", int((time.monotonic() - started) * 1000))
-            return jsonify({"error": "encrypted", "requiresPassword": True}), 422
-        if exit_code == 3:
-            _log(job_id, "wrong_password", int((time.monotonic() - started) * 1000))
-            return (
-                jsonify({"error": "wrong_password", "requiresPassword": True}),
-                422,
-            )
-
-        _log(
-            job_id,
-            "ok" if exit_code == 0 else "error",
-            int((time.monotonic() - started) * 1000),
-            exitCode=exit_code,
-        )
-        return jsonify(result)
-    finally:
-        # Stateless: the PDF never outlives the parse.
-        try:
-            pdf_path.unlink()
-        except OSError:
-            pass
-        try:
-            os.rmdir(workdir)
-        except OSError:
-            pass
+        page_number = int(raw_page)
+    except (TypeError, ValueError):
+        return jsonify({"error": "page must be a positive integer"}), 400
+    if page_number < 1:
+        return jsonify({"error": "page must be a positive integer"}), 400
+    return _run_pdf_script(
+        script=RENDER_SCRIPT,
+        extra_args=[str(page_number)],
+        timeout_s=RENDER_TIMEOUT_S,
+        job_id=job_id,
+        pdf_b64=body.get("pdfBase64"),
+        password=_password_from_body(body),
+        log_ok="render_ok",
+    )
 
 
 @app.errorhandler(413)
 def too_large(_err):
-    return jsonify({"error": "request body exceeds 10 MB"}), 413
+    return jsonify({"error": "request body exceeds 36 MB"}), 413
 
 
 if __name__ == "__main__":

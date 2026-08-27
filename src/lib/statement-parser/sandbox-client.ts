@@ -1,6 +1,7 @@
 const SANDBOX_URL = process.env.PYTHON_SANDBOX_URL ?? "http://localhost:8080";
 const PARSER_SECRET = process.env.PARSER_SECRET ?? "";
 const PAGES_TIMEOUT_MS = 60_000;
+const RENDER_TIMEOUT_MS = 30_000;
 
 export class SandboxError extends Error {
   constructor(
@@ -49,9 +50,16 @@ type SandboxErrorResponse = {
   requiresPassword?: boolean;
 };
 
+export type RenderedPdfPage = {
+  page: number;
+  jpegBase64: string;
+  width: number;
+  height: number;
+};
+
 async function callSandbox(
-  path: "/extract-pages",
-  body: Record<string, string>,
+  path: "/extract-pages" | "/render-page",
+  body: Record<string, string | number>,
   timeoutMs: number,
 ): Promise<SandboxResponse> {
   const controller = new AbortController();
@@ -119,9 +127,22 @@ async function callSandbox(
   }
 }
 
+function pdfBody(
+  pdfBuffer: Buffer,
+  extra?: Record<string, string | number>,
+  password?: string,
+): Record<string, string | number> {
+  const body: Record<string, string | number> = {
+    pdfBase64: pdfBuffer.toString("base64"),
+    ...extra,
+  };
+  if (password) body.password = password;
+  return body;
+}
+
 /**
  * Extract every page of a PDF using the baked-in extract-pages.py. Returns
- * the raw JSON string the script emitted: { pages: [{page, method, ...}] }.
+ * the raw JSON string the script emitted: { pages: [{page, text, kind, ...}] }.
  * No LLM-generated code is accepted by this endpoint.
  *
  * @param password Optional password for encrypted PDFs. Passed in the request
@@ -133,14 +154,9 @@ export async function extractPdfPages(
   pdfBuffer: Buffer,
   password?: string,
 ): Promise<string> {
-  const body: Record<string, string> = {
-    pdfBase64: pdfBuffer.toString("base64"),
-  };
-  if (password) body.password = password;
-
   const { stdout, stderr, exitCode } = await callSandbox(
     "/extract-pages",
-    body,
+    pdfBody(pdfBuffer, undefined, password),
     PAGES_TIMEOUT_MS,
   );
   if (exitCode !== 0) {
@@ -151,4 +167,60 @@ export async function extractPdfPages(
     );
   }
   return stdout.trim();
+}
+
+/**
+ * Rasterize a single 1-based page to JPEG. Does not persist the image.
+ * Encryption errors match `extractPdfPages`.
+ */
+export async function renderPdfPage(
+  pdfBuffer: Buffer,
+  pageNumber: number,
+  password?: string,
+): Promise<RenderedPdfPage> {
+  const { stdout, stderr, exitCode } = await callSandbox(
+    "/render-page",
+    pdfBody(pdfBuffer, { page: pageNumber }, password),
+    RENDER_TIMEOUT_MS,
+  );
+  if (exitCode !== 0) {
+    throw new SandboxError(
+      `render_page.py exited ${exitCode}: ${stderr.slice(-1000)}`,
+      exitCode,
+      stderr,
+    );
+  }
+  let parsed: {
+    page?: number;
+    jpeg_base64?: string;
+    width?: number;
+    height?: number;
+  };
+  try {
+    parsed = JSON.parse(stdout.trim()) as typeof parsed;
+  } catch (err) {
+    throw new SandboxError(
+      `render_page.py returned invalid JSON: ${(err as Error).message}`,
+      0,
+      stderr,
+    );
+  }
+  if (
+    typeof parsed.page !== "number" ||
+    typeof parsed.jpeg_base64 !== "string" ||
+    typeof parsed.width !== "number" ||
+    typeof parsed.height !== "number"
+  ) {
+    throw new SandboxError(
+      "render_page.py output missing page/jpeg_base64/width/height",
+      0,
+      stderr,
+    );
+  }
+  return {
+    page: parsed.page,
+    jpegBase64: parsed.jpeg_base64,
+    width: parsed.width,
+    height: parsed.height,
+  };
 }
