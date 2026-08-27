@@ -16,6 +16,7 @@ import { test } from "node:test";
 
 import {
   extractPdfPages,
+  renderPdfPage,
   EncryptedPdfError,
   WrongPdfPasswordError,
   SandboxError,
@@ -74,5 +75,48 @@ test("non-encryption error stays a generic SandboxError", async () => {
     await assert.rejects(extractPdfPages(PDF), SandboxError);
   } finally {
     restore();
+  }
+});
+
+test("render-page 422 error:encrypted -> EncryptedPdfError", async () => {
+  const restore = stubFetch(422, { error: "encrypted" });
+  try {
+    await assert.rejects(renderPdfPage(PDF, 1), EncryptedPdfError);
+  } finally {
+    restore();
+  }
+});
+
+test("render-page success maps jpeg_base64 and never treats it as step payload concern", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (
+    _url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const body = JSON.parse(String(init?.body)) as { page?: number };
+    assert.equal(body.page, 3);
+    assert.ok(String(_url).endsWith("/render-page"));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        stdout: JSON.stringify({
+          page: 3,
+          jpeg_base64: "QUJD",
+          width: 1600,
+          height: 2048,
+        }),
+        stderr: "",
+        exitCode: 0,
+      }),
+    };
+  }) as unknown as typeof fetch;
+  try {
+    const rendered = await renderPdfPage(PDF, 3);
+    assert.equal(rendered.page, 3);
+    assert.equal(rendered.jpegBase64, "QUJD");
+    assert.equal(rendered.height, 2048);
+  } finally {
+    globalThis.fetch = original;
   }
 });

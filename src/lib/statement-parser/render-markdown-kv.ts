@@ -1,13 +1,17 @@
-import type { RawTransaction, BankIdentification } from './types';
+import type { RawTransaction, BankIdentification } from "./types";
 
 export class KvIntegrityError extends Error {
   constructor(detail: string) {
     super(`KV integrity check failed: ${detail}`);
-    this.name = 'KvIntegrityError';
+    this.name = "KvIntegrityError";
   }
 }
 
-export type ExtractionMethod = 'pdfplumber_cached' | 'pdfplumber_new' | 'csv_llm';
+export type ExtractionMethod =
+  | "pdfplumber_cached"
+  | "pdfplumber_new"
+  | "pdf_vision"
+  | "csv_llm";
 
 export type RenderKvInput = {
   bank: BankIdentification | null;
@@ -40,10 +44,17 @@ const clamp01 = (v: number): number => {
 // `- description: <value>` cleanly. Bank narrations are already single-line
 // after the extraction step joins multi-line continuations, but normalise
 // defensively against stray CR/LF/tabs and runs of whitespace.
-const flattenDescription = (s: string): string => s.replace(/\s+/g, ' ').trim();
+const flattenDescription = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 export function renderMarkdownKv(input: RenderKvInput): RenderKvOutput {
-  const { bank, currency, openingBalance, closingBalance, transactions, extractionMethod } = input;
+  const {
+    bank,
+    currency,
+    openingBalance,
+    closingBalance,
+    transactions,
+    extractionMethod,
+  } = input;
 
   const rows: {
     date: string;
@@ -56,7 +67,9 @@ export function renderMarkdownKv(input: RenderKvInput): RenderKvOutput {
   for (let i = 0; i < transactions.length; i++) {
     const t = transactions[i];
     if (!t.date || !DATE_RE.test(t.date)) {
-      throw new KvIntegrityError(`row ${i}: date '${t.date}' is not YYYY-MM-DD`);
+      throw new KvIntegrityError(
+        `row ${i}: date '${t.date}' is not YYYY-MM-DD`,
+      );
     }
     const debit = t.debit ?? 0;
     const credit = t.credit ?? 0;
@@ -80,27 +93,31 @@ export function renderMarkdownKv(input: RenderKvInput): RenderKvOutput {
   const accountNumberLast4 = input.accountNumberLast4 ?? null;
 
   const lines: string[] = [];
-  lines.push('---');
-  lines.push(`account_holder: ${accountHolder == null ? 'null' : JSON.stringify(accountHolder)}`);
+  lines.push("---");
+  lines.push(
+    `account_holder: ${accountHolder == null ? "null" : JSON.stringify(accountHolder)}`,
+  );
   // account_number_last4 is quoted to preserve leading zeros per D02 §2.1.
   lines.push(
     `account_number_last4: ${
-      accountNumberLast4 == null ? 'null' : JSON.stringify(accountNumberLast4)
+      accountNumberLast4 == null ? "null" : JSON.stringify(accountNumberLast4)
     }`,
   );
-  lines.push(`bank_name: ${bank ? JSON.stringify(bank.bankName) : 'null'}`);
-  lines.push(`bank_identifier: ${bank ? JSON.stringify(bank.bankIdentifier) : 'null'}`);
-  lines.push(`country: ${bank ? JSON.stringify(bank.country) : 'null'}`);
-  lines.push(`period_start: ${periodStart ?? 'null'}`);
-  lines.push(`period_end: ${periodEnd ?? 'null'}`);
+  lines.push(`bank_name: ${bank ? JSON.stringify(bank.bankName) : "null"}`);
+  lines.push(
+    `bank_identifier: ${bank ? JSON.stringify(bank.bankIdentifier) : "null"}`,
+  );
+  lines.push(`country: ${bank ? JSON.stringify(bank.country) : "null"}`);
+  lines.push(`period_start: ${periodStart ?? "null"}`);
+  lines.push(`period_end: ${periodEnd ?? "null"}`);
   lines.push(`opening_balance_minor: ${toMinor(openingBalance).toString()}`);
   lines.push(`closing_balance_minor: ${toMinor(closingBalance).toString()}`);
   lines.push(`currency: ${currency}`);
   lines.push(`transaction_count: ${rows.length}`);
   lines.push(`extraction_method: ${extractionMethod}`);
   lines.push(`extraction_confidence: ${conf.toFixed(2)}`);
-  lines.push('---');
-  lines.push('');
+  lines.push("---");
+  lines.push("");
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
@@ -110,10 +127,10 @@ export function renderMarkdownKv(input: RenderKvInput): RenderKvOutput {
     lines.push(`- debit_minor: ${r.debitMinor.toString()}`);
     lines.push(`- credit_minor: ${r.creditMinor.toString()}`);
     lines.push(`- balance_minor: ${r.balanceMinor.toString()}`);
-    lines.push('');
+    lines.push("");
   }
 
-  const markdown = lines.join('\n');
+  const markdown = lines.join("\n");
 
   const blockCount = (markdown.match(/^## Transaction \d+$/gm) ?? []).length;
   if (blockCount !== rows.length) {
@@ -126,10 +143,11 @@ export function renderMarkdownKv(input: RenderKvInput): RenderKvOutput {
 }
 
 export type ConfidencePath =
-  | 'pdfplumber_cached'
-  | 'pdfplumber_new_first_try'
-  | 'pdfplumber_regen'
-  | 'csv_llm';
+  | "pdfplumber_cached"
+  | "pdfplumber_new_first_try"
+  | "pdfplumber_regen"
+  | "pdf_vision"
+  | "csv_llm";
 
 export function computeExtractionConfidence(params: {
   path: ConfidencePath;
@@ -137,16 +155,19 @@ export function computeExtractionConfidence(params: {
 }): number {
   let base: number;
   switch (params.path) {
-    case 'pdfplumber_cached':
+    case "pdfplumber_cached":
       base = 0.95;
       break;
-    case 'pdfplumber_new_first_try':
+    case "pdfplumber_new_first_try":
       base = 0.8;
       break;
-    case 'pdfplumber_regen':
+    case "pdfplumber_regen":
       base = 0.65;
       break;
-    case 'csv_llm':
+    case "pdf_vision":
+      base = 0.65;
+      break;
+    case "csv_llm":
       base = 0.75;
       break;
   }

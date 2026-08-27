@@ -14,6 +14,6 @@ services:
     restart: unless-stopped
     # The host (Next.js / Inngest dev) reaches the sandbox on :8080. Requests are
     # authenticated with the same PARSER_SECRET used in prod (set in your shell
-    # / .env.local). Only the baked-in extract-pages.py runs — no LLM code.
+    # / .env.local). Only the baked-in extract-pages.py / render_page.py run.
     environment:
       - PARSER_SECRET=${PARSER_SECRET}

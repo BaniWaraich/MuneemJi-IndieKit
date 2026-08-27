@@ -1,14 +1,17 @@
 /**
  * D02: Statement Format Extraction — Inngest function.
- * Replaces workers/statement.worker.ts from the original BullMQ architecture.
  *
  * Event: "muneem/statement.uploaded" (D01 confirm route emits after S3 PUT)
- * Payload: { statementId: string }
+ * Payload: { statementId: string, password?: string }
+ *
+ * PDF path is split into steps so scanned-page GPT-4o vision stays under the
+ * Vercel Hobby ~60s cap. CSV path is a single step.
  *
  * On completion, sends "muneem/statement.extracted" to trigger D03.
  */
 
 import { and, eq, notInArray } from "drizzle-orm";
+import { NonRetriableError } from "inngest";
 import { inngest } from "@/lib/inngest/client";
 import { db } from "@/db";
 import {
@@ -19,11 +22,25 @@ import {
 import { downloadToBuffer } from "@/lib/muneem-storage/download";
 import {
   extractPdfPages,
+  renderPdfPage,
   EncryptedPdfError,
   WrongPdfPasswordError,
 } from "@/lib/statement-parser/sandbox-client";
 import { parseCsvWithLlm } from "@/lib/statement-parser/csv-llm-parser";
-import { parsePdfWithLlm } from "@/lib/statement-parser/pdf-llm-parser";
+import { parseTextPagesWithLlm } from "@/lib/statement-parser/pdf-llm-parser";
+import { extractScannedPageWithVision } from "@/lib/statement-parser/pdf-vision-parser";
+import {
+  parseExtractedPages,
+  scannedPageNumbers,
+  salvagePageNumbers,
+  assertVisionPageCap,
+  VisionPageCapError,
+} from "@/lib/statement-parser/extracted-pages";
+import {
+  combinePageResults,
+  mergePdfPageResults,
+  PdfMergeError,
+} from "@/lib/statement-parser/pdf-page-merge";
 import {
   validateBalance,
   validateRunningBalances,
@@ -38,6 +55,7 @@ import type {
   ExtractionResult,
   BankIdentification,
 } from "@/lib/statement-parser/types";
+import type { NumberedPageResult } from "@/lib/statement-parser/page-schema";
 
 type LogCtx = {
   runId?: string;
@@ -68,11 +86,6 @@ function isPdfBuffer(buf: Buffer): boolean {
   return buf.slice(0, 5).toString("ascii") === "%PDF-";
 }
 
-/**
- * Locate a date (in any common bank-statement format) within the raw
- * pdfplumber page JSON and return ~30 lines of context centred on the
- * first match. Used only for diagnostics — best-effort, not exact.
- */
 function sliceRawAroundDate(rawPagesJson: string, isoDate: string): string {
   try {
     const parsed = JSON.parse(rawPagesJson) as {
@@ -126,11 +139,17 @@ async function resolveFirmId(clientOrgId: string): Promise<string> {
   return org.firmId;
 }
 
+type D02ParseMethod =
+  | "pdfplumber_cached"
+  | "pdfplumber_new"
+  | "pdf_vision"
+  | "csv_direct";
+
 type ParseLogParams = {
   firmId: string;
   statementId: string;
   parserScriptId: string | null;
-  parseMethod: "pdfplumber_cached" | "pdfplumber_new" | "csv_direct";
+  parseMethod: D02ParseMethod;
   balanceCheckPass: boolean;
   transactionsFound: number;
   openingBalance: bigint | null;
@@ -164,8 +183,8 @@ async function writePhase1Markdown(
     extractionMethod: ExtractionMethod;
     extractionConfidence: number;
   },
-  sendEvent: (event: { name: string; data: object }) => Promise<void>,
-): Promise<void> {
+  sendEvent?: (event: { name: string; data: object }) => Promise<void>,
+): Promise<"phase1_complete" | "empty"> {
   const { markdown, periodStart, periodEnd } = renderMarkdownKv({
     bank: input.bank,
     currency: input.currency,
@@ -195,7 +214,7 @@ async function writePhase1Markdown(
     })
     .where(eq(bankStatements.id, statement.id));
 
-  if (!isEmpty) {
+  if (!isEmpty && sendEvent) {
     await sendEvent({
       name: "muneem/statement.extracted",
       data: { statementId: statement.id },
@@ -207,6 +226,7 @@ async function writePhase1Markdown(
     status: nextStatus,
     extractionMethod: input.extractionMethod,
   });
+  return nextStatus;
 }
 
 export const statementExtract = inngest.createFunction(
@@ -216,9 +236,6 @@ export const statementExtract = inngest.createFunction(
     concurrency: { limit: 2 },
     retries: 3,
     triggers: [{ event: "muneem/statement.uploaded" }],
-    // Safety net: if all retries are exhausted — including a serverless
-    // timeout-kill that bypasses the in-handler try/catch — mark the statement
-    // failed so it surfaces instead of silently sitting at 'processing'.
     onFailure: async ({
       error,
       event,
@@ -243,8 +260,6 @@ export const statementExtract = inngest.createFunction(
                 "phase1_complete",
                 "parsed",
                 "empty",
-                // Locked-PDF states are not failures — never let onFailure
-                // overwrite them with `failed`.
                 "password_required",
                 "unlocking",
               ]),
@@ -259,7 +274,13 @@ export const statementExtract = inngest.createFunction(
     logger,
   }: {
     event: { id: string; data: { statementId: string; password?: string } };
-    step: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> };
+    step: {
+      run: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
+      sendEvent: (
+        id: string,
+        payload: { name: string; data: object },
+      ) => Promise<unknown>;
+    };
     logger: { info: (msg: string, ctx?: object) => void };
   }) => {
     const { statementId, password } = event.data as {
@@ -267,16 +288,12 @@ export const statementExtract = inngest.createFunction(
       password?: string;
     };
 
-    await step.run("extract-statement", async () => {
+    const prep = await step.run("load-statement", async () => {
       const statement = await db.query.bankStatements.findFirst({
         where: eq(bankStatements.id, statementId),
       });
       if (!statement) throw new Error(`Statement ${statementId} not found`);
 
-      // Idempotency: process only fresh uploads (`processing`) and unlock
-      // retries (`unlocking`, set by the unlock route when re-firing this
-      // event with a password). Any other status means D02 already ran or is
-      // awaiting user input — skip.
       if (
         statement.status !== "processing" &&
         statement.status !== "unlocking"
@@ -285,75 +302,198 @@ export const statementExtract = inngest.createFunction(
           statementId,
           status: statement.status,
         });
-        return;
+        return { skip: true as const };
       }
 
       const firmId = await resolveFirmId(statement.clientOrgId);
-      const ctx: LogCtx = {
-        runId: event.id,
+      const fileBuffer = await downloadToBuffer(statement.s3Key);
+      const fileKind = isPdfBuffer(fileBuffer)
+        ? ("pdf" as const)
+        : statement.filename.toLowerCase().endsWith(".csv")
+          ? ("csv" as const)
+          : ("unknown" as const);
+
+      if (fileKind === "unknown") {
+        await db
+          .update(bankStatements)
+          .set({
+            status: "failed",
+            errorMessage:
+              "file does not start with %PDF- magic bytes and is not .csv",
+          })
+          .where(eq(bankStatements.id, statement.id));
+        throw new NonRetriableError(
+          "file does not start with %PDF- magic bytes and is not .csv",
+        );
+      }
+
+      log(
+        "info",
+        "statement-extract: start",
+        {
+          runId: event.id,
+          statementId: statement.id,
+          firmId,
+          clientOrgId: statement.clientOrgId,
+        },
+        { filename: statement.filename, fileKind },
+      );
+
+      return {
+        skip: false as const,
+        fileKind,
         statementId: statement.id,
         firmId,
         clientOrgId: statement.clientOrgId,
-      };
-
-      log("info", "statement-extract: start", ctx, {
+        s3Key: statement.s3Key,
         filename: statement.filename,
-      });
-
-      const fileBuffer = await downloadToBuffer(statement.s3Key);
-
-      const sendEvent = async (e: { name: string; data: object }) => {
-        await inngest.send(e);
       };
+    });
 
-      try {
-        if (isPdfBuffer(fileBuffer)) {
-          await handlePdf(statement, firmId, fileBuffer, ctx, sendEvent, password);
-        } else if (statement.filename.toLowerCase().endsWith(".csv")) {
-          await handleCsv(statement, firmId, fileBuffer, ctx, sendEvent);
-        } else {
-          throw new Error(
-            "file does not start with %PDF- magic bytes and is not .csv",
-          );
-        }
-      } catch (err) {
-        // Locked-PDF signals are NOT failures: park the statement in
-        // `password_required` and return normally so Inngest does not retry
-        // and onFailure does not mark it `failed`. The password (if any) is
-        // never logged or persisted.
-        if (
-          err instanceof EncryptedPdfError ||
-          err instanceof WrongPdfPasswordError
-        ) {
-          const wrong = err instanceof WrongPdfPasswordError;
-          await db
-            .update(bankStatements)
-            .set({
-              status: "password_required",
-              errorMessage: wrong
-                ? "The password you entered is incorrect. Please try again."
-                : null,
-            })
-            .where(eq(bankStatements.id, statement.id));
-          log("info", "statement-extract: awaiting PDF password", ctx, {
-            wrongPassword: wrong,
-          });
-          return;
-        }
+    if (prep.skip) return;
 
-        const message = (
-          err instanceof Error ? err.message : String(err)
-        ).slice(0, 500);
-        await db
-          .update(bankStatements)
-          .set({ status: "failed", errorMessage: message })
-          .where(eq(bankStatements.id, statement.id));
-        log("error", "statement-extract: marked failed", ctx, {
-          error: message,
+    const ctx: LogCtx = {
+      runId: event.id,
+      statementId: prep.statementId,
+      firmId: prep.firmId,
+      clientOrgId: prep.clientOrgId,
+    };
+
+    if (prep.fileKind === "csv") {
+      await step.run("extract-csv", async () => {
+        const statement = await db.query.bankStatements.findFirst({
+          where: eq(bankStatements.id, prep.statementId),
         });
+        if (!statement)
+          throw new Error(`Statement ${prep.statementId} not found`);
+        const fileBuffer = await downloadToBuffer(prep.s3Key);
+        await handleCsv(statement, prep.firmId, fileBuffer, ctx, async (e) => {
+          await inngest.send(e);
+        });
+      });
+      return;
+    }
+
+    const extracted = await step.run("extract-pages", async () => {
+      const buf = await downloadToBuffer(prep.s3Key);
+      try {
+        const raw = await extractPdfPages(buf, password);
+        return {
+          status: "ok" as const,
+          pages: parseExtractedPages(raw),
+          rawPagesJson: raw,
+        };
+      } catch (err) {
+        if (err instanceof EncryptedPdfError) {
+          return { status: "encrypted" as const };
+        }
+        if (err instanceof WrongPdfPasswordError) {
+          return { status: "wrong_password" as const };
+        }
         throw err;
       }
     });
+
+    if (extracted.status !== "ok") {
+      await step.run("mark-password-required", async () => {
+        const wrong = extracted.status === "wrong_password";
+        await db
+          .update(bankStatements)
+          .set({
+            status: "password_required",
+            errorMessage: wrong
+              ? "The password you entered is incorrect. Please try again."
+              : null,
+          })
+          .where(eq(bankStatements.id, prep.statementId));
+        log("info", "statement-extract: awaiting PDF password", ctx, {
+          wrongPassword: wrong,
+        });
+      });
+      return;
+    }
+
+    try {
+      assertVisionPageCap(scannedPageNumbers(extracted.pages).length);
+    } catch (err) {
+      if (err instanceof VisionPageCapError) {
+        await step.run("mark-vision-cap-initial", async () => {
+          await db
+            .update(bankStatements)
+            .set({ status: "failed", errorMessage: err.message.slice(0, 500) })
+            .where(eq(bankStatements.id, prep.statementId));
+        });
+        throw new NonRetriableError(err.message);
+      }
+      throw err;
+    }
+
+    const textPages = await step.run("parse-text-pages", async () =>
+      parseTextPagesWithLlm(extracted.pages),
+    );
+
+    const txCountByPage = new Map(
+      textPages.map((p) => [p.page, p.transactions.length]),
+    );
+    const visionNums = [
+      ...new Set([
+        ...scannedPageNumbers(extracted.pages),
+        ...salvagePageNumbers(extracted.pages, txCountByPage),
+      ]),
+    ].sort((a, b) => a - b);
+
+    try {
+      assertVisionPageCap(visionNums.length);
+    } catch (err) {
+      if (err instanceof VisionPageCapError) {
+        await step.run("mark-vision-cap-salvage", async () => {
+          await db
+            .update(bankStatements)
+            .set({ status: "failed", errorMessage: err.message.slice(0, 500) })
+            .where(eq(bankStatements.id, prep.statementId));
+        });
+        throw new NonRetriableError(err.message);
+      }
+      throw err;
+    }
+
+    const visionPages: NumberedPageResult[] = [];
+    for (const n of visionNums) {
+      const one = await step.run(`vision-page-${n}`, async () => {
+        const buf = await downloadToBuffer(prep.s3Key);
+        const rendered = await renderPdfPage(buf, n, password);
+        const parsed = await extractScannedPageWithVision(
+          n,
+          rendered.jpegBase64,
+        );
+        return {
+          page: n,
+          currency: parsed.currency,
+          transactions: parsed.transactions,
+        };
+      });
+      visionPages.push(one);
+    }
+
+    const usedVision = visionNums.length > 0;
+    const finalized = await step.run("finalize-pdf", async () =>
+      finalizePdf({
+        statementId: prep.statementId,
+        firmId: prep.firmId,
+        ctx,
+        textPages,
+        visionPages,
+        usedVision,
+        rawPagesJson: extracted.rawPagesJson,
+      }),
+    );
+
+    if (finalized.emit) {
+      await step.sendEvent("emit-extracted", {
+        name: "muneem/statement.extracted",
+        data: { statementId: prep.statementId },
+      });
+    }
   },
 );
 
@@ -434,27 +574,63 @@ async function handleCsv(
   );
 }
 
-async function handlePdf(
-  statement: typeof bankStatements.$inferSelect,
-  firmId: string,
-  pdfBuffer: Buffer,
-  ctx: LogCtx,
-  sendEvent: (e: { name: string; data: object }) => Promise<void>,
-  password?: string,
-): Promise<void> {
-  // password (when present) unlocks encrypted PDFs. extractPdfPages throws
-  // EncryptedPdfError / WrongPdfPasswordError, caught by the orchestrator above.
-  const rawPagesJson = await extractPdfPages(pdfBuffer, password);
-  const result = await parsePdfWithLlm(rawPagesJson);
+async function finalizePdf(input: {
+  statementId: string;
+  firmId: string;
+  ctx: LogCtx;
+  textPages: NumberedPageResult[];
+  visionPages: NumberedPageResult[];
+  usedVision: boolean;
+  rawPagesJson: string;
+}): Promise<{ emit: boolean }> {
+  const statement = await db.query.bankStatements.findFirst({
+    where: eq(bankStatements.id, input.statementId),
+  });
+  if (!statement) throw new Error(`Statement ${input.statementId} not found`);
+
+  const combined = combinePageResults(input.textPages, input.visionPages);
+  let result;
+  try {
+    result = mergePdfPageResults(combined);
+  } catch (err) {
+    const message =
+      err instanceof PdfMergeError ? err.message : (err as Error).message;
+    await safeWriteParseLog(
+      {
+        firmId: input.firmId,
+        statementId: statement.id,
+        parserScriptId: null,
+        parseMethod: input.usedVision ? "pdf_vision" : "pdfplumber_new",
+        balanceCheckPass: false,
+        transactionsFound: 0,
+        openingBalance: null,
+        closingBalance: null,
+        computedClosing: null,
+        errorMessage: JSON.stringify({ reason: "empty", message }),
+      },
+      input.ctx,
+    );
+    await db
+      .update(bankStatements)
+      .set({ status: "failed", errorMessage: message.slice(0, 500) })
+      .where(eq(bankStatements.id, statement.id));
+    throw new NonRetriableError(
+      `PDF extraction failed for statement ${statement.id}: ${message}`,
+    );
+  }
 
   const currency = (
     result.currency ||
     statement.currency ||
     "INR"
   ).toUpperCase();
-  assertSupportedCurrency(currency);
+  try {
+    assertSupportedCurrency(currency);
+  } catch (err) {
+    throw new NonRetriableError((err as Error).message);
+  }
   if (statement.currency && currency !== statement.currency.toUpperCase()) {
-    throw new Error(
+    throw new NonRetriableError(
       `extracted currency ${currency} does not match declared ${statement.currency}`,
     );
   }
@@ -484,14 +660,17 @@ async function handlePdf(
         }))
       : [];
 
-  // Best-effort: find the raw PDF page(s) that mention the dates in the
-  // window so the operator can eyeball raw vs parsed. We don't have an
-  // exact row→page map (LLM mediates), so we slice the raw text around
-  // the first matching date occurrence.
   const rawPagesAroundMismatch =
     mismatchIdx != null && rowsAroundMismatch.length > 0
-      ? sliceRawAroundDate(rawPagesJson, rowsAroundMismatch[0].date)
+      ? sliceRawAroundDate(input.rawPagesJson, rowsAroundMismatch[0].date)
       : "";
+
+  const parseMethod: D02ParseMethod = input.usedVision
+    ? "pdf_vision"
+    : "pdfplumber_new";
+  const extractionMethod: ExtractionMethod = input.usedVision
+    ? "pdf_vision"
+    : "pdfplumber_new";
 
   const diagnosticPayload = balancePass
     ? null
@@ -508,53 +687,60 @@ async function handlePdf(
         mismatch_idx: mismatchIdx,
         llm_rows_around_mismatch: rowsAroundMismatch,
         raw_text_around_mismatch: rawPagesAroundMismatch,
+        used_vision: input.usedVision,
+        vision_pages: input.visionPages.map((p) => p.page),
       });
 
   await safeWriteParseLog(
     {
-      firmId,
+      firmId: input.firmId,
       statementId: statement.id,
       parserScriptId: null,
-      parseMethod: "pdfplumber_new",
+      parseMethod,
       balanceCheckPass: balancePass,
       transactionsFound: result.transactions.length,
       openingBalance: BigInt(Math.round(result.opening_balance * 100)),
       closingBalance: BigInt(Math.round(result.closing_balance * 100)),
       computedClosing: balanceResult.computedClosing,
-      // No truncation — error_message is `text`. The raw + parsed
-      // side-by-side is the whole point of this diagnostic.
       errorMessage: balancePass ? null : diagnosticPayload,
     },
-    ctx,
+    input.ctx,
   );
 
   if (!balancePass) {
-    throw new Error(
-      `PDF extraction failed for statement ${statement.id}: ${
-        isEmpty
-          ? "zero transactions"
-          : balanceErrorMessage(balanceResult, runningBalances)
-      }`,
+    const message = isEmpty
+      ? "zero transactions"
+      : balanceErrorMessage(balanceResult, runningBalances);
+    await db
+      .update(bankStatements)
+      .set({
+        status: "failed",
+        errorMessage:
+          `PDF extraction failed for statement ${statement.id}: ${message}`.slice(
+            0,
+            500,
+          ),
+      })
+      .where(eq(bankStatements.id, statement.id));
+    throw new NonRetriableError(
+      `PDF extraction failed for statement ${statement.id}: ${message}`,
     );
   }
 
   const extractionConfidence = computeExtractionConfidence({
-    path: "pdfplumber_new_first_try",
+    path: input.usedVision ? "pdf_vision" : "pdfplumber_new_first_try",
     bankIdentified: false,
   });
 
-  await writePhase1Markdown(
-    statement,
-    ctx,
-    {
-      bank: null,
-      currency,
-      openingBalance: result.opening_balance,
-      closingBalance: result.closing_balance,
-      transactions: result.transactions,
-      extractionMethod: "pdfplumber_new",
-      extractionConfidence,
-    },
-    sendEvent,
-  );
+  const status = await writePhase1Markdown(statement, input.ctx, {
+    bank: null,
+    currency,
+    openingBalance: result.opening_balance,
+    closingBalance: result.closing_balance,
+    transactions: result.transactions,
+    extractionMethod,
+    extractionConfidence,
+  });
+
+  return { emit: status === "phase1_complete" };
 }

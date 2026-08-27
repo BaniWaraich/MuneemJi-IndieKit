@@ -8,7 +8,8 @@ table directly.
 Usage: python extract-pages.py <path_to_pdf> [password]
 
 - On success: emits one JSON object to stdout and exits 0:
-    { "pages": [ { "page": N, "text": "..." } ] }
+    { "pages": [ { "page": N, "text": "...", "kind": "text"|"scanned"|"blank",
+                   "signals": { char_count, alnum_count, word_count, image_area_ratio } } ] }
 - If the PDF is encrypted and NO password was supplied (or the encryption
     handler/algorithm is unrecognised): emits { "encrypted": true } to stdout
     and exits 2.
@@ -25,6 +26,8 @@ import json
 import sys
 
 import pdfplumber
+
+from classify_page import classify_page
 
 # pdfplumber (>=0.11) wraps pdfminer.six. An encrypted PDF opened without the
 # correct password raises pdfminer.pdfdocument.PDFPasswordIncorrect. We catch the
@@ -67,7 +70,15 @@ def main():
         with pdf:
             for idx, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text(layout=True) or ""
-                pages_out.append({"page": idx, "text": text})
+                kind, signals = classify_page(page)
+                pages_out.append(
+                    {
+                        "page": idx,
+                        "text": text,
+                        "kind": kind,
+                        "signals": signals,
+                    }
+                )
     except PDFEncryptionError:
         _emit_encrypted(password)
 
