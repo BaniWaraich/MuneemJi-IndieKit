@@ -46,6 +46,7 @@ import {
 } from "@/lib/statement-interpretation/insert-transactions";
 import { ensureClientProfile } from "@/lib/client-profile/ensure-profile";
 import { listPayeeMemory } from "@/lib/payee-memory/store";
+import { enforceUnknownDebitNeedsInvoice } from "@/lib/statement-interpretation/needs-invoice-guard";
 
 type LogCtx = {
   runId?: string;
@@ -118,13 +119,18 @@ function rowFromLlm(
   extractionConfidence: number,
 ): InterpretedRow {
   const method: InterpretationMethod = "llm";
+  const category = llm.category as Category;
   return {
     transaction_index: tx.transaction_index,
     date: tx.date,
     description: tx.description,
     amount_minor: amountMinorOf(tx),
-    needs_invoice: llm.needs_invoice,
-    category: llm.category as Category,
+    needs_invoice: enforceUnknownDebitNeedsInvoice({
+      category,
+      needsInvoice: llm.needs_invoice,
+      debitMinor: tx.debit_minor,
+    }),
+    category,
     reasoning: llm.reasoning,
     interpretation_method: method,
     interpretation_confidence: confidenceToString(
@@ -132,7 +138,7 @@ function rowFromLlm(
     ),
     matched_known_vendor_name: null,
     matched_active_loan_lender: null,
-    match_status: deriveMatchStatus(llm.category as Category, method),
+    match_status: deriveMatchStatus(category, method),
   };
 }
 
