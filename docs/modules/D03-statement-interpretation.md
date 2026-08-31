@@ -291,9 +291,15 @@ Rules:
   customer receipts, owner drawings.
 - When uncertain on needs_invoice, default to true — it is better to request an
   invoice that is not needed than to miss one that is.
+- Opaque debit narrations (cheque clearing / CLG / BY CLG / SCH / bare refs with
+  no identifiable counterparty) → category="unknown" AND needs_invoice=true.
+  Never set needs_invoice=false on an unknown debit.
 - For category="unknown", the reasoning must explain specifically why the
   transaction is ambiguous (e.g., "Description is opaque IMPS reference with no
   identifiable counterparty").
+- **Post-LLM guard (code):** if `category=unknown` and `debit_minor > 0`, force
+  `needs_invoice=true` regardless of the model’s boolean. Prompt alone is not
+  enough — models still mark opaque CLG/cheque debits false.
 - The client's industry, GST registration, and transaction mode should anchor
   your reasoning. A cash-heavy retail business has different cash flow norms
   than a digital-first consultancy. A composition-scheme dealer cannot claim
